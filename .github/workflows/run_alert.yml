@@ -1,0 +1,27 @@
+name: Hourly Nifty Scanner
+
+on:
+  schedule:
+    # Runs at :45 UTC which equals :15 IST (09:15, 10:15, 11:15, 12:15, 13:15, 14:15, 15:15 IST, Mon-Fri)
+    - cron: '45 3,4,5,6,7,8,9 * * 1-5'
+  workflow_dispatch: # Allows you to manually trigger it anytime for testing
+
+jobs:
+  run-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install yfinance pandas requests numpy
+
+      - name: Run Nifty Scanner
+        run: |
+          python scanner.py
