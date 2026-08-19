@@ -169,3 +169,8 @@ def run_scanner():
 
 if __name__ == "__main__":
   run_scanner()
+  # TEMPORARY TEST LINE:
+    send_telegram_alert(
+        "🧪 *TEST ALERT*: Connection verified! Nifty 1H Scanner is live on the"
+        " cloud."
+    )
