@@ -6,33 +6,29 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-# ==================== CONFIGURATION ====================
-# Replace with your actual Bot Token and Chat ID
+# ==================== CREDENTIALS ====================
 BOT_TOKEN = "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw"
 CHAT_ID = "7972609109"
-# =======================================================
+# =====================================================
 
 
 def send_telegram_alert(text: str):
-  """Dispatches message to Telegram with error verification."""
+  """Sends notification to Telegram."""
   if "YOUR_BOT_TOKEN" in BOT_TOKEN or "YOUR_CHAT_ID" in CHAT_ID:
-    print(
-        "⚠️ WARNING: Telegram credentials contain default placeholder text."
-        " Please update BOT_TOKEN and CHAT_ID."
-    )
+    print("⚠️ Telegram token or chat ID is still set to placeholder values.")
     return False
 
   url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
   payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
 
   try:
-    response = requests.post(url, json=payload, timeout=12)
-    res_data = response.json()
-    if response.status_code == 200 and res_data.get("ok"):
+    res = requests.post(url, json=payload, timeout=15)
+    data = res.json()
+    if res.status_code == 200 and data.get("ok"):
       print("✅ Telegram notification delivered successfully!")
       return True
     else:
-      print(f"❌ Telegram API Error: {res_data.get('description', response.text)}")
+      print(f"❌ Telegram Error: {data.get('description', res.text)}")
       return False
   except Exception as e:
     print(f"❌ Connection error sending to Telegram: {e}")
@@ -42,8 +38,6 @@ def send_telegram_alert(text: str):
 def get_nifty_data():
   """Fetches live 1-hour Nifty 50 candle data."""
   print("📡 Downloading Nifty 1-Hour data from Yahoo Finance...")
-
-  # Method 1: yf.download with multi-ticker compatibility
   try:
     df = yf.download(
         tickers="^NSEI",
@@ -57,7 +51,6 @@ def get_nifty_data():
   except Exception as e:
     print(f"⚠️ yf.download error: {e}")
 
-  # Method 2: Ticker history fallback
   try:
     t = yf.Ticker("^NSEI")
     df = t.history(period="1mo", interval="1h")
@@ -71,30 +64,37 @@ def get_nifty_data():
 
 def run_scanner():
   print("=" * 60)
-  print(f"🚀 NIFTY 1H SCANNER EXECUTED AT: {datetime.utcnow()} UTC")
+  print(f"🚀 NIFTY 1H SCANNER RUNNING AT: {datetime.utcnow()} UTC")
   print("=" * 60)
+
+  # ----------------------------------------------------
+  # 🧪 TEST ALERT (Will fire every time you run this)
+  # ----------------------------------------------------
+  send_telegram_alert(
+      "🧪 *TEST ALERT*: Connection verified! Nifty 1H Scanner is live on GitHub"
+      " Actions cloud."
+  )
 
   try:
     df = get_nifty_data()
 
     if df is None or df.empty or len(df) < 5:
-      print(
-          "ℹ️ Market data feed unavailable or market is closed. No signals"
-          " evaluated."
-      )
+      print("ℹ️ Market data feed unavailable or market closed.")
       return
 
-    # Clean DataFrame column names
+    # Clean column names
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = [col[0].lower() for col in df.columns]
     else:
       df.columns = [col.lower() for col in df.columns]
 
     if "close" not in df.columns:
-      print(f"❌ 'close' price column missing. Columns found: {list(df.columns)}")
+      print(
+          f"❌ 'close' column missing. Columns found: {list(df.columns)}"
+      )
       return
 
-    # Compute 5 EMA and 10 EMA
+    # Calculate 5 EMA & 10 EMA
     df["ema_5"] = df["close"].ewm(span=5, adjust=False).mean()
     df["ema_10"] = df["close"].ewm(span=10, adjust=False).mean()
     df["ema_gap"] = (df["ema_5"] - df["ema_10"]).abs()
@@ -122,8 +122,8 @@ def run_scanner():
     gap = f"{curr['ema_gap']:.2f}"
 
     print(
-        f"📊 Latest Candle: {candle_time} | Spot: {spot} | 5 EMA: {ema5} | 10"
-        f" EMA: {ema10} | Gap: {gap} pts"
+        f"📊 Candle: {candle_time} | Spot: {spot} | 5 EMA: {ema5} | 10 EMA:"
+        f" {ema10} | Gap: {gap} pts"
     )
 
     if bull_cross:
@@ -132,7 +132,7 @@ def run_scanner():
           f"⏰ *Time:* `{candle_time}`\n"
           f"📈 *Spot:* `{spot}`\n"
           f"📊 *5 EMA:* `{ema5}` | *10 EMA:* `{ema10}`\n"
-          f"📏 *EMA Gap:* `{gap} pts`\n\n"
+          f"📏 *Gap:* `{gap} pts`\n\n"
           f"👉 *Action:* Check 5m chart for Swing High breakout!"
       )
       send_telegram_alert(msg)
@@ -143,7 +143,7 @@ def run_scanner():
           f"⏰ *Time:* `{candle_time}`\n"
           f"📉 *Spot:* `{spot}`\n"
           f"📊 *5 EMA:* `{ema5}` | *10 EMA:* `{ema10}`\n"
-          f"📏 *EMA Gap:* `{gap} pts`\n\n"
+          f"📏 *Gap:* `{gap} pts`\n\n"
           f"👉 *Action:* Check 5m chart for Swing Low breakout!"
       )
       send_telegram_alert(msg)
@@ -160,17 +160,12 @@ def run_scanner():
       )
       send_telegram_alert(msg)
     else:
-      print(f"ℹ️ No signal. Gap = {gap} pts (5 EMA: {ema5}, 10 EMA: {ema10})")
+      print(f"ℹ️ No market signal triggered. Current gap: {gap} pts.")
 
-  except Exception as err:
-    print(f"❌ Error during execution: {err}")
+  except Exception as e:
+    print(f"❌ Error during execution: {e}")
     traceback.print_exc()
 
 
 if __name__ == "__main__":
   run_scanner()
-  # TEMPORARY TEST LINE:
-    send_telegram_alert(
-        "🧪 *TEST ALERT*: Connection verified! Nifty 1H Scanner is live on the"
-        " cloud."
-    )
