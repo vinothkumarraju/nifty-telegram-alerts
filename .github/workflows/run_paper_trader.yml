@@ -1,0 +1,44 @@
+name: Nifty Paper Trader Engine
+
+on:
+  schedule:
+    # Morning Session: 09:15 AM IST (03:45 AM UTC) -> Mon-Fri
+    - cron: '45 3 * * 1-5'
+    # Afternoon Session: 12:30 PM IST (07:00 AM UTC) -> Mon-Fri
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch: # Allows manual one-click start
+
+# Permissions to allow the bot to commit paper trade logs back to the repo
+permissions:
+  contents: write
+
+jobs:
+  run-paper-trader:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install yfinance pandas requests numpy
+
+      - name: Run Paper Trading Engine
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python paper_trader.py
+
+      - name: Save Trade Logs & State to GitHub
+        if: always() # Runs even if manually cancelled
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add strategy_state.json paper_trades.csv || true
+          git commit -m "Auto-update paper trade logs [skip ci]" || echo "No trade changes to commit"
+          git push origin main || echo "Nothing to push"
