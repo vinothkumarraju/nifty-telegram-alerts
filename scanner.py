@@ -8,10 +8,10 @@ import yfinance as yf
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw"
 CHAT_ID = "7972609109"
-SCAN_INTERVAL_SECONDS = 120  # Scan interval in seconds
-GAP_THRESHOLD = 5.0  # Alert when gap <= 5.0 pts
+SCAN_INTERVAL_SECONDS = 120  # Scans every 2 minutes
+GAP_THRESHOLD = 5.0  # Points
 
-# Define Indian Standard Time (IST = UTC + 5:30)
+# Indian Standard Time (UTC + 5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
 # =======================================================
 
@@ -20,7 +20,9 @@ LAST_ALERT_STATE = {
     "last_alert_timestamp": 0,
     "last_cross_state": None,
 }
-LAST_HOURLY_DISPATCH_HOUR = -1
+
+# Prevents firing immediately on startup if launched past :15
+LAST_HOURLY_DISPATCH_HOUR = datetime.now(IST).hour
 
 
 def send_telegram(text: str):
@@ -31,7 +33,7 @@ def send_telegram(text: str):
   try:
     requests.post(url, json=payload, timeout=10)
   except Exception as e:
-    print(f"Telegram connection error: {e}")
+    print(f"Telegram error: {e}")
 
 
 def get_live_ema_status():
@@ -64,8 +66,8 @@ def get_live_ema_status():
   prev_ema5 = float(df["ema_5"].iloc[-2])
   prev_ema10 = float(df["ema_10"].iloc[-2])
 
-  k5 = 2.0 / (5.0 + 1.0)
-  k10 = 2.0 / (10.0 + 1.0)
+  k5 = 2.0 / 6.0
+  k10 = 2.0 / 11.0
 
   live_ema5 = (live_spot * k5) + (prev_ema5 * (1.0 - k5))
   live_ema10 = (live_spot * k10) + (prev_ema10 * (1.0 - k10))
@@ -92,7 +94,6 @@ def evaluate_and_notify():
   e10 = data["live_ema10"]
   gap = data["live_gap"]
 
-  # Explicit Indian Standard Time (IST) Clock
   now_ist = datetime.now(IST)
   now_ts = sleep_time.time()
   current_time_str = now_ist.strftime("%I:%M:%S %p IST")
@@ -104,21 +105,20 @@ def evaluate_and_notify():
       "Bullish (5 EMA > 10 EMA)" if e5 > e10 else "Bearish (5 EMA < 10 EMA)"
   )
 
-  # Prints exact IST time in GitHub Console
   print(
       f"[{current_time_str}] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA:"
-      f" {e10:.2f} | Live Gap: {gap:.2f} pts"
+      f" {e10:.2f} | Gap: {gap:.2f} pts"
   )
 
-  # 1. Immediate Alert on Crossover
+  # 1. Live Crossover Alert (Instant)
   if bull_cross and LAST_ALERT_STATE["last_cross_state"] != "BULL":
     LAST_ALERT_STATE["last_cross_state"] = "BULL"
     LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
     msg = (
         f"🟢 *LIVE ALERT: NIFTY 1H BULL CROSSOVER*\n\n"
-        f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}` (Intra-candle)\n"
-        f"📍 *Live Spot:* `{spot:.2f}`\n"
-        f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
+        f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
+        f"📍 *Spot:* `{spot:.2f}`\n"
+        f"📈 *5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
         f"📏 *Gap:* `{gap:.2f} pts`\n\n"
         f"👉 *Action:* Check 5m chart for Swing High breakout!"
     )
@@ -129,35 +129,35 @@ def evaluate_and_notify():
     LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
     msg = (
         f"🔴 *LIVE ALERT: NIFTY 1H BEAR CROSSOVER*\n\n"
-        f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}` (Intra-candle)\n"
-        f"📍 *Live Spot:* `{spot:.2f}`\n"
-        f"📉 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
+        f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
+        f"📍 *Spot:* `{spot:.2f}`\n"
+        f"📉 *5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
         f"📏 *Gap:* `{gap:.2f} pts`\n\n"
         f"👉 *Action:* Check 5m chart for Swing Low breakout!"
     )
     send_telegram(msg)
 
-  # 2. Alert on Tight Gap (<= 5 pts) with 15-Minute Cooldown
+  # 2. Tight Gap Warning (<= 5 pts) with 15-min cooldown
   elif tight_gap:
     if (now_ts - LAST_ALERT_STATE["last_alert_timestamp"]) > 900:
       LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
       msg = (
-          f"⚠️ *LIVE WARNING: EMA GAP <= 5 PTS*\n\n"
+          f"⚠️ *LIVE WARNING: EMA GAP $\\le$ 5 PTS*\n\n"
           f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
-          f"📍 *Live Spot:* `{spot:.2f}`\n"
+          f"📍 *Spot:* `{spot:.2f}`\n"
           f"📏 *Live Gap:* `{gap:.2f} pts`\n"
-          f"🧭 *Current Direction:* `{trend}`\n\n"
-          f"👉 *Status:* EMA compression active. Crossover imminent!"
+          f"🧭 *Direction:* `{trend}`\n\n"
+          f"👉 *Status:* Crossover compression active."
       )
       send_telegram(msg)
 
-  # 3. Guaranteed Hourly Candle Close Card (Fires at :15 past every hour & 15:32 post-CAS)
-  is_hourly_close = (now_ist.minute == 15) and (
+  # 3. Scheduled Hourly Close Card (Window: :15 to :19 IST & 15:30 to 15:34 post-CAS)
+  is_hourly_close = (15 <= now_ist.minute <= 19) and (
       LAST_HOURLY_DISPATCH_HOUR != now_ist.hour
   )
   is_eod_cas = (
       (now_ist.hour == 15)
-      and (now_ist.minute >= 30)
+      and (30 <= now_ist.minute <= 35)
       and (LAST_HOURLY_DISPATCH_HOUR != 99)
   )
 
@@ -184,13 +184,13 @@ def evaluate_and_notify():
 
 
 def run_live_loop():
-  print("🚀 Starting Live Nifty Gap Scanner (IST Synchronized)...")
+  print("🚀 Starting Live Nifty Scanner (IST Locked)...")
   start_time = sleep_time.time()
   while (sleep_time.time() - start_time) < 10800:
     try:
       evaluate_and_notify()
     except Exception as e:
-      print(f"Error in scan loop: {e}")
+      print(f"Loop error: {e}")
     sleep_time.sleep(SCAN_INTERVAL_SECONDS)
 
 
