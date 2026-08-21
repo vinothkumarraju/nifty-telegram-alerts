@@ -21,8 +21,9 @@ LAST_ALERT_STATE = {
     "last_cross_state": None,
 }
 
-# Prevents firing immediately on startup if launched past :15
-LAST_HOURLY_DISPATCH_HOUR = datetime.now(IST).hour
+# Fixed: Only locks if started AFTER the :15-:19 window
+_init_now = datetime.now(IST)
+LAST_HOURLY_DISPATCH_HOUR = _init_now.hour if _init_now.minute >= 20 else -1
 
 
 def send_telegram(text: str):
@@ -142,7 +143,7 @@ def evaluate_and_notify():
     if (now_ts - LAST_ALERT_STATE["last_alert_timestamp"]) > 900:
       LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
       msg = (
-          f"⚠️ *LIVE WARNING: EMA GAP $\\le$ 5 PTS*\n\n"
+          f"⚠️ *LIVE WARNING: EMA GAP <= 5 PTS*\n\n"
           f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
           f"📍 *Spot:* `{spot:.2f}`\n"
           f"📏 *Live Gap:* `{gap:.2f} pts`\n"
@@ -151,7 +152,7 @@ def evaluate_and_notify():
       )
       send_telegram(msg)
 
-  # 3. Scheduled Hourly Close Card (Window: :15 to :19 IST & 15:30 to 15:34 post-CAS)
+  # 3. Scheduled Hourly Close Card (Window: :15 to :19 IST & 15:30 to 15:35 post-CAS)
   is_hourly_close = (15 <= now_ist.minute <= 19) and (
       LAST_HOURLY_DISPATCH_HOUR != now_ist.hour
   )
