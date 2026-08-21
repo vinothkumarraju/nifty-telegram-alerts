@@ -11,7 +11,7 @@ import yfinance as yf
 BOT_TOKEN = "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw"
 CHAT_ID = "7972609109"
 SCAN_INTERVAL_SECONDS = 120  # Scans every 2 minutes
-GAP_THRESHOLD = 5.0  # Points required for confirmation
+GAP_THRESHOLD = 5.0  # Points
 SPREAD_WIDTH = 200  # ATM Buy + 200 OTM Sell
 STATE_FILE = "strategy_state.json"
 TRADE_LOG_FILE = "paper_trades.csv"
@@ -22,54 +22,34 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def get_target_expiry(dt_ist: datetime) -> str:
-  """Dynamically fetches active exchange expiry contracts without hardcoded calendars.
-
-  - Reads live contract chain directly from yfinance.
-  - If days to nearest contract <= 2 days -> Automatically selects the next
-  available contract.
-  """
   today = dt_ist.date()
-
   try:
     ticker = yf.Ticker("^NSEI")
-    available_expiries = ticker.options  # Returns list of 'YYYY-MM-DD' strings
-
+    available_expiries = ticker.options
     if available_expiries:
-      # Parse and filter contracts for today or future dates
-      valid_dates = []
-      for exp_str in available_expiries:
-        exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
-        if exp_date >= today:
-          valid_dates.append(exp_date)
-
+      valid_dates = [
+          datetime.strptime(exp, "%Y-%m-%d").date()
+          for exp in available_expiries
+          if datetime.strptime(exp, "%Y-%m-%d").date() >= today
+      ]
       valid_dates.sort()
-
       if valid_dates:
-        nearest_expiry = valid_dates[0]
-        dte = (nearest_expiry - today).days
-
-        # <= 2 DTE Rule: Roll to next week's contract
-        if dte <= 2 and len(valid_dates) > 1:
-          target_expiry = valid_dates[1]
-        else:
-          target_expiry = nearest_expiry
-
-        return target_expiry.strftime("%d-%b-%Y")
-
+        nearest = valid_dates[0]
+        dte = (nearest - today).days
+        target = (
+            valid_dates[1] if (dte <= 2 and len(valid_dates) > 1) else nearest
+        )
+        return target.strftime("%d-%b-%Y")
   except Exception as e:
-    print(f"Dynamic expiry fetch warning (using fallback): {e}")
+    print(f"Option chain fetch warning: {e}")
 
-  # Dynamic fallback: Computes upcoming Tuesday (or Monday if Tuesday passed)
   days_to_tuesday = (1 - today.weekday()) % 7
   nearest_tuesday = today + timedelta(days=days_to_tuesday)
   dte = (nearest_tuesday - today).days
-
-  if dte <= 2:
-    target_expiry = nearest_tuesday + timedelta(days=7)
-  else:
-    target_expiry = nearest_tuesday
-
-  return target_expiry.strftime("%d-%b-%Y")
+  target = (
+      nearest_tuesday + timedelta(days=7) if dte <= 2 else nearest_tuesday
+  )
+  return target.strftime("%d-%b-%Y")
 
 
 def load_state():
@@ -133,7 +113,6 @@ def fetch_market_data():
         progress=False,
         auto_adjust=True,
     )
-
     if df_1h is None or df_1h.empty or len(df_1h) < 10:
       return None, None
     if df_5m is None or df_5m.empty or len(df_5m) < 20:
@@ -147,7 +126,6 @@ def fetch_market_data():
 
     df_1h["ema_5"] = df_1h["close"].ewm(span=5, adjust=False).mean()
     df_1h["ema_10"] = df_1h["close"].ewm(span=10, adjust=False).mean()
-
     return df_1h, df_5m
   except Exception as e:
     print(f"Data fetch error: {e}")
@@ -157,7 +135,6 @@ def fetch_market_data():
 def evaluate_strategy():
   state = load_state()
   df_1h, df_5m = fetch_market_data()
-
   if df_1h is None or df_5m is None:
     return
 
@@ -172,7 +149,6 @@ def evaluate_strategy():
   ema5_1h = float(curr_1h["ema_5"])
   ema10_1h = float(curr_1h["ema_10"])
   gap_1h = abs(ema5_1h - ema10_1h)
-
   prev_ema5 = float(prev_1h["ema_5"])
   prev_ema10 = float(prev_1h["ema_10"])
 
@@ -187,19 +163,15 @@ def evaluate_strategy():
       else str(df_1h.index[-1])
   )
 
-  # ==========================================================
-  # PHASE 1: 1H CLOSE AUDIT & ROLLBACK ENGINE
-  # ==========================================================
+  # 1. Verification on 1H Candle Close (Confirm or Rollback)
   if (
       state["pending_confirmation"] is not None
       and state.get("last_verified_1h_candle") != closed_1h_time
   ):
-
     pending = state["pending_confirmation"]
     if pending["candle_time"] == closed_1h_time:
       state["last_verified_1h_candle"] = closed_1h_time
       req_direction = pending["expected_direction"]
-
       closed_ema5 = float(prev_1h["ema_5"])
       closed_ema10 = float(prev_1h["ema_10"])
 
@@ -212,7 +184,6 @@ def evaluate_strategy():
         state["pending_confirmation"] = None
         state["previous_position_backup"] = None
         save_state(state)
-
         msg = (
             f"✅ *1H CANDLE CONFIRMATION VERIFIED*\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -220,17 +191,14 @@ def evaluate_strategy():
             f"📈 *Closed 5 EMA:* `{closed_ema5:.2f}` | *10 EMA:*"
             f" `{closed_ema10:.2f}`\n"
             f"📦 *Position:* `{state['active_position']['type']}`\n"
-            f"📅 *Contract Expiry:* `{state['active_position']['expiry']}`\n"
+            f"📅 *Expiry:* `{state['active_position']['expiry']}`\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔒 *Status:* 1H crossover confirmed. Position locked."
+            f"🔒 *Status:* Trend confirmed. Position locked."
         )
         send_telegram(msg)
-
       else:
-        # Crossover failed on 1H close -> Rollback
         failed_pos = state["active_position"]
         backup_pos = state["previous_position_backup"]
-
         log_paper_trade({
             "timestamp": time_str,
             "action": "CLOSE_INVALIDATED",
@@ -247,11 +215,12 @@ def evaluate_strategy():
             else ("BEAR_PUT_SPREAD" if req_direction == "BULLISH" else "BULL_CALL_SPREAD")
         )
         atm_strike = int(round(spot / 50.0) * 50)
-
-        if "BULL" in reopened_type:
-          b_strike, s_strike = atm_strike, atm_strike + SPREAD_WIDTH
-        else:
-          b_strike, s_strike = atm_strike, atm_strike - SPREAD_WIDTH
+        b_strike = atm_strike
+        s_strike = (
+            atm_strike + SPREAD_WIDTH
+            if "BULL" in reopened_type
+            else atm_strike - SPREAD_WIDTH
+        )
 
         state["active_position"] = {
             "type": reopened_type,
@@ -276,25 +245,22 @@ def evaluate_strategy():
             "buy_strike": b_strike,
             "sell_strike": s_strike,
         })
-
         rollback_msg = (
             f"🚨 *1H CROSSOVER INVALIDATED (ROLLBACK TRIGGERED)*\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"⏰ *1H Candle Closed:* `{closed_1h_time}`\n"
-            f"⚠️ *Reason:* 5 EMA failed to hold beyond 10 EMA on 1H close.\n"
+            f"⚠️ *Reason:* 5 EMA failed to hold beyond 10 EMA.\n"
             f"❌ *Closed Failed:* `{failed_pos['type']}`\n"
             f"🔄 *Restored Spread:* `{reopened_type}` ({b_strike} /"
             f" {s_strike})\n"
-            f"📅 *Contract Expiry:* `{target_expiry}`\n"
+            f"📅 *Expiry:* `{target_expiry}`\n"
             f"📍 *Spot:* `{spot:.2f}`\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🛡️ *Action:* Restored previous trend alignment."
+            f"🛡️ *Action:* Reverted to prior trend alignment."
         )
         send_telegram(rollback_msg)
 
-  # ==========================================================
-  # PHASE 2: ARM STRATEGY ON STRICT 1H CROSSOVER
-  # ==========================================================
+  # 2. Strict 1H Crossover Detection (Arming Phase)
   bull_cross = (ema5_1h > ema10_1h) and (prev_ema5 <= prev_ema10)
   bear_cross = (ema5_1h < ema10_1h) and (prev_ema5 >= prev_ema10)
 
@@ -311,7 +277,6 @@ def evaluate_strategy():
     state["armed_candle_time"] = forming_1h_time
     state["last_cross_state"] = "BULL"
     save_state(state)
-
     msg = (
         f"🎯 *1H BULLISH CROSSOVER DETECTED (ARMED)*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -332,7 +297,6 @@ def evaluate_strategy():
     state["armed_candle_time"] = forming_1h_time
     state["last_cross_state"] = "BEAR"
     save_state(state)
-
     msg = (
         f"🎯 *1H BEARISH CROSSOVER DETECTED (ARMED)*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -346,9 +310,7 @@ def evaluate_strategy():
     )
     send_telegram(msg)
 
-  # ==========================================================
-  # PHASE 3: EXECUTE 200-PT DEBIT SPREAD ON 5M BREAKOUT
-  # ==========================================================
+  # 3. 5M Breakout Verification & 200-Pt Spread Execution
   if state["armed_direction"] is not None and state["swing_pivot"] is not None:
     last_closed_5m = df_5m.iloc[-2]
     candle_close_5m = float(last_closed_5m["close"])
@@ -360,7 +322,6 @@ def evaluate_strategy():
 
     if state.get("last_processed_5m_candle") != candle_time_5m:
       state["last_processed_5m_candle"] = candle_time_5m
-
       direction = state["armed_direction"]
       pivot = float(state["swing_pivot"])
 
@@ -377,8 +338,6 @@ def evaluate_strategy():
 
       if is_bull_trigger or is_bear_trigger:
         atm_strike = int(round(spot / 50.0) * 50)
-
-        # Backup old position before closing
         state["previous_position_backup"] = state.get("active_position")
 
         exit_msg_block = ""
@@ -436,7 +395,6 @@ def evaluate_strategy():
             "buy_strike": buy_strike,
             "sell_strike": sell_strike,
         })
-
         exec_msg = (
             f"🚀 *PAPER TRADE EXECUTED (PENDING 1H CLOSE)*\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -456,16 +414,38 @@ def evaluate_strategy():
 
 
 def run_live_loop():
-  print("🚀 Starting Nifty 200-Pt Spread Paper Trader (Dynamic Expiry Sync)...")
+  now_ist = datetime.now(IST)
+
+  # Weekend blocker (Saturday=5, Sunday=6)
+  if now_ist.weekday() >= 5:
+    print(
+        f"🛑 [{now_ist.strftime('%A, %I:%M %p IST')}] Weekend detected. Market"
+        " is closed. Terminating immediately."
+    )
+    return
+
+  # Off-hours blocker (Before 09:15 AM or After 03:35 PM IST)
+  current_minutes = now_ist.hour * 60 + now_ist.minute
+  if current_minutes < (9 * 60 + 15) or current_minutes > (15 * 60 + 35):
+    print(
+        f"🛑 [{now_ist.strftime('%I:%M:%S %p IST')}] Outside NSE market hours"
+        " (09:15 AM - 03:35 PM IST). Terminating immediately."
+    )
+    return
+
+  print(
+      "🚀 Starting Nifty Paper Trader Engine (Market Hours Active & Locked)..."
+  )
   start_time = sleep_time.time()
 
   while (sleep_time.time() - start_time) < 10800:
-    now_ist = datetime.now(IST)
+    loop_ist = datetime.now(IST)
 
-    if (now_ist.hour == 15 and now_ist.minute >= 35) or now_ist.hour > 15:
+    # Auto-Shutdown after 03:35 PM IST (post-CAS)
+    if (loop_ist.hour == 15 and loop_ist.minute >= 35) or loop_ist.hour > 15:
       print(
-          f"🛑 [{now_ist.strftime('%I:%M:%S %p IST')}] Market closed. Shutting"
-          " down."
+          f"🛑 [{loop_ist.strftime('%I:%M:%S %p IST')}] EOD CAS Complete (3:35"
+          " PM). Shutting down engine."
       )
       break
 
