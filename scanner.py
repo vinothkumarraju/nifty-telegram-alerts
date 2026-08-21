@@ -187,12 +187,26 @@ def evaluate_and_notify():
 def run_live_loop():
   print("🚀 Starting Live Nifty Scanner (IST Locked)...")
   start_time = sleep_time.time()
+
   while (sleep_time.time() - start_time) < 10800:
+    now_ist = datetime.now(IST)
+
+    # 🛑 Auto-Shutdown after Market Close & CAS Finalization (3:35 PM IST)
+    if (now_ist.hour == 15 and now_ist.minute >= 35) or now_ist.hour > 15:
+      print(
+          f"🛑 [{now_ist.strftime('%I:%M:%S %p IST')}] Market Closed & EOD CAS"
+          " Finalized. Shutting down scanner."
+      )
+      break
+
     try:
       evaluate_and_notify()
     except Exception as e:
       print(f"Loop error: {e}")
+
     sleep_time.sleep(SCAN_INTERVAL_SECONDS)
+
+  print("🏁 Scanner session completed successfully.")
 
 
 if __name__ == "__main__":
