@@ -83,9 +83,12 @@ def get_live_ema_status():
       "candle_time": df.index[-1].strftime("%d-%b %I:%M %p"),
   }
 
+# Add this state variable near the top with LAST_ALERT_STATE:
+LAST_HOURLY_DISPATCH_HOUR = -1
+
 
 def evaluate_and_notify():
-  global LAST_ALERT_STATE
+  global LAST_ALERT_STATE, LAST_HOURLY_DISPATCH_HOUR
   data = get_live_ema_status()
   if not data:
     return
@@ -94,12 +97,14 @@ def evaluate_and_notify():
   e5 = data["live_ema5"]
   e10 = data["live_ema10"]
   gap = data["live_gap"]
+  now_dt = datetime.now()
   now_ts = sleep_time.time()
-  current_time_str = datetime.now().strftime("%I:%M:%S %p")
+  current_time_str = now_dt.strftime("%I:%M:%S %p")
 
   bull_cross = (e5 > e10) and (data["prev_ema5"] <= data["prev_ema10"])
   bear_cross = (e5 < e10) and (data["prev_ema5"] >= data["prev_ema10"])
   tight_gap = gap <= GAP_THRESHOLD
+  trend = "Bullish" if e5 > e10 else "Bearish"
 
   print(
       f"[{current_time_str}] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA:"
@@ -112,7 +117,7 @@ def evaluate_and_notify():
     LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
     msg = (
         f"🟢 *LIVE ALERT: NIFTY 1H BULL CROSSOVER*\n\n"
-        f"⏰ *Time:* `{current_time_str}` (Intra-candle)\n"
+        f"⏰ *Time:* `{current_time_str}`\n"
         f"📍 *Live Spot:* `{spot:.2f}`\n"
         f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
         f"📏 *Gap:* `{gap:.2f} pts`\n\n"
@@ -125,7 +130,7 @@ def evaluate_and_notify():
     LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
     msg = (
         f"🔴 *LIVE ALERT: NIFTY 1H BEAR CROSSOVER*\n\n"
-        f"⏰ *Time:* `{current_time_str}` (Intra-candle)\n"
+        f"⏰ *Time:* `{current_time_str}`\n"
         f"📍 *Live Spot:* `{spot:.2f}`\n"
         f"📉 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
         f"📏 *Gap:* `{gap:.2f} pts`\n\n"
@@ -133,21 +138,36 @@ def evaluate_and_notify():
     )
     send_telegram(msg)
 
-  # 2. Alert on Tight Gap (<= 5 pts) with 15-Minute Cooldown
+  # 2. Tight Gap Warning (<= 5 pts) with 15-Minute Cooldown
   elif tight_gap:
-    time_since_last = now_ts - LAST_ALERT_STATE["last_alert_timestamp"]
-    if time_since_last > 900:  # 900 seconds = 15 mins cooldown
+    if (now_ts - LAST_ALERT_STATE["last_alert_timestamp"]) > 900:
       LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
-      trend = "Bullish" if e5 > e10 else "Bearish"
       msg = (
-          f"⚠️ *LIVE WARNING: EMA GAP $\\le$ 5 PTS*\n\n"
+          f"⚠️ *LIVE WARNING: EMA GAP <= 5 PTS*\n\n"
           f"⏰ *Time:* `{current_time_str}`\n"
           f"📍 *Live Spot:* `{spot:.2f}`\n"
           f"📏 *Live Gap:* `{gap:.2f} pts`\n"
           f"🧭 *Current Direction:* `{trend}`\n\n"
-          f"👉 *Status:* EMA compression active. Crossover imminent!"
+          f"👉 *Status:* Crossover imminent. Be ready on 5m chart!"
       )
       send_telegram(msg)
+
+  # 3. Guaranteed Hourly Candle Close Card (Fires once at :15 past every hour)
+  if now_dt.minute == 15 and LAST_HOURLY_DISPATCH_HOUR != now_dt.hour:
+    LAST_HOURLY_DISPATCH_HOUR = now_dt.hour
+    msg = (
+        f"📊 *NIFTY 1H: HOURLY STATUS UPDATE*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏰ *Candle Close:* `{now_dt.strftime('%d-%b %I:%M %p')}`\n"
+        f"📍 *Nifty Spot:* `{spot:.2f}`\n"
+        f"📈 *5 EMA:* `{e5:.2f}`\n"
+        f"📉 *10 EMA:* `{e10:.2f}`\n"
+        f"📏 *EMA Gap:* `{gap:.2f} pts`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🧭 *Trend:* `{trend}`\n"
+        f"✅ *Status:* Trend continuing."
+    )
+    send_telegram(msg)
 
 
 def run_live_loop():
