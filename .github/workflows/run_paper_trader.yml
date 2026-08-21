@@ -2,13 +2,12 @@ name: Nifty Paper Trader Engine
 
 on:
   schedule:
-    # Morning Session: 09:15 AM IST (03:45 AM UTC) -> Mon-Fri
+    # Session 1: 09:15 AM IST (03:45 AM UTC) -> Monday to Friday
     - cron: '45 3 * * 1-5'
-    # Afternoon Session: 12:30 PM IST (07:00 AM UTC) -> Mon-Fri
+    # Session 2: 12:30 PM IST (07:00 AM UTC) -> Monday to Friday
     - cron: '0 7 * * 1-5'
-  workflow_dispatch: # Allows manual one-click start
+  workflow_dispatch:
 
-# Permissions to allow the bot to commit paper trade logs back to the repo
 permissions:
   contents: write
 
@@ -35,7 +34,7 @@ jobs:
           python paper_trader.py
 
       - name: Save Trade Logs & State to GitHub
-        if: always() # Runs even if manually cancelled
+        if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
