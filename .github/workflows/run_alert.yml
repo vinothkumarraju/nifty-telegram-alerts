@@ -25,5 +25,7 @@ jobs:
           pip install yfinance pandas requests numpy
 
       - name: Run Live Real-Time Scanner
+        env:
+          PYTHONUNBUFFERED: "1"
         run: |
           python scanner.py
