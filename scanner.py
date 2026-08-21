@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import datetime, timedelta, timezone
 import time as sleep_time
 import traceback
 import pandas as pd
@@ -8,16 +8,19 @@ import yfinance as yf
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw"
 CHAT_ID = "7972609109"
-SCAN_INTERVAL_SECONDS = 60  # Checks every 60 seconds during market hours
-GAP_THRESHOLD = 5.0  # Alert when gap <= 5 points
+SCAN_INTERVAL_SECONDS = 120  # Scan interval in seconds
+GAP_THRESHOLD = 5.0  # Alert when gap <= 5.0 pts
+
+# Define Indian Standard Time (IST = UTC + 5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
 # =======================================================
 
-# State tracking to avoid message spamming
 LAST_ALERT_STATE = {
     "last_alert_type": None,
     "last_alert_timestamp": 0,
     "last_cross_state": None,
 }
+LAST_HOURLY_DISPATCH_HOUR = -1
 
 
 def send_telegram(text: str):
@@ -32,7 +35,6 @@ def send_telegram(text: str):
 
 
 def get_live_ema_status():
-  # Download 1-hour candles
   df = yf.download(
       tickers="^NSEI",
       period="5d",
@@ -48,11 +50,9 @@ def get_live_ema_status():
   else:
     df.columns = [col.lower() for col in df.columns]
 
-  # Closed candle historical series
   df["ema_5"] = df["close"].ewm(span=5, adjust=False).mean()
   df["ema_10"] = df["close"].ewm(span=10, adjust=False).mean()
 
-  # Fetch latest live tick/price
   live_ticker = yf.Ticker("^NSEI")
   live_data = live_ticker.history(period="1d", interval="1m")
   live_spot = (
@@ -61,11 +61,9 @@ def get_live_ema_status():
       else float(df["close"].iloc[-1])
   )
 
-  # Previous closed candle EMAs
   prev_ema5 = float(df["ema_5"].iloc[-2])
   prev_ema10 = float(df["ema_10"].iloc[-2])
 
-  # Calculate Live Forming EMAs
   k5 = 2.0 / (5.0 + 1.0)
   k10 = 2.0 / (10.0 + 1.0)
 
@@ -80,11 +78,7 @@ def get_live_ema_status():
       "live_gap": live_gap,
       "prev_ema5": prev_ema5,
       "prev_ema10": prev_ema10,
-      "candle_time": df.index[-1].strftime("%d-%b %I:%M %p"),
   }
-
-# Add this state variable near the top with LAST_ALERT_STATE:
-LAST_HOURLY_DISPATCH_HOUR = -1
 
 
 def evaluate_and_notify():
@@ -97,15 +91,20 @@ def evaluate_and_notify():
   e5 = data["live_ema5"]
   e10 = data["live_ema10"]
   gap = data["live_gap"]
-  now_dt = datetime.now()
+
+  # Explicit Indian Standard Time (IST) Clock
+  now_ist = datetime.now(IST)
   now_ts = sleep_time.time()
-  current_time_str = now_dt.strftime("%I:%M:%S %p")
+  current_time_str = now_ist.strftime("%I:%M:%S %p IST")
 
   bull_cross = (e5 > e10) and (data["prev_ema5"] <= data["prev_ema10"])
   bear_cross = (e5 < e10) and (data["prev_ema5"] >= data["prev_ema10"])
   tight_gap = gap <= GAP_THRESHOLD
-  trend = "Bullish" if e5 > e10 else "Bearish"
+  trend = (
+      "Bullish (5 EMA > 10 EMA)" if e5 > e10 else "Bearish (5 EMA < 10 EMA)"
+  )
 
+  # Prints exact IST time in GitHub Console
   print(
       f"[{current_time_str}] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA:"
       f" {e10:.2f} | Live Gap: {gap:.2f} pts"
@@ -117,7 +116,7 @@ def evaluate_and_notify():
     LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
     msg = (
         f"🟢 *LIVE ALERT: NIFTY 1H BULL CROSSOVER*\n\n"
-        f"⏰ *Time:* `{current_time_str}`\n"
+        f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}` (Intra-candle)\n"
         f"📍 *Live Spot:* `{spot:.2f}`\n"
         f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
         f"📏 *Gap:* `{gap:.2f} pts`\n\n"
@@ -130,7 +129,7 @@ def evaluate_and_notify():
     LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
     msg = (
         f"🔴 *LIVE ALERT: NIFTY 1H BEAR CROSSOVER*\n\n"
-        f"⏰ *Time:* `{current_time_str}`\n"
+        f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}` (Intra-candle)\n"
         f"📍 *Live Spot:* `{spot:.2f}`\n"
         f"📉 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
         f"📏 *Gap:* `{gap:.2f} pts`\n\n"
@@ -138,27 +137,41 @@ def evaluate_and_notify():
     )
     send_telegram(msg)
 
-  # 2. Tight Gap Warning (<= 5 pts) with 15-Minute Cooldown
+  # 2. Alert on Tight Gap (<= 5 pts) with 15-Minute Cooldown
   elif tight_gap:
     if (now_ts - LAST_ALERT_STATE["last_alert_timestamp"]) > 900:
       LAST_ALERT_STATE["last_alert_timestamp"] = now_ts
       msg = (
           f"⚠️ *LIVE WARNING: EMA GAP <= 5 PTS*\n\n"
-          f"⏰ *Time:* `{current_time_str}`\n"
+          f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
           f"📍 *Live Spot:* `{spot:.2f}`\n"
           f"📏 *Live Gap:* `{gap:.2f} pts`\n"
           f"🧭 *Current Direction:* `{trend}`\n\n"
-          f"👉 *Status:* Crossover imminent. Be ready on 5m chart!"
+          f"👉 *Status:* EMA compression active. Crossover imminent!"
       )
       send_telegram(msg)
 
-  # 3. Guaranteed Hourly Candle Close Card (Fires once at :15 past every hour)
-  if now_dt.minute == 15 and LAST_HOURLY_DISPATCH_HOUR != now_dt.hour:
-    LAST_HOURLY_DISPATCH_HOUR = now_dt.hour
+  # 3. Guaranteed Hourly Candle Close Card (Fires at :15 past every hour & 15:32 post-CAS)
+  is_hourly_close = (now_ist.minute == 15) and (
+      LAST_HOURLY_DISPATCH_HOUR != now_ist.hour
+  )
+  is_eod_cas = (
+      (now_ist.hour == 15)
+      and (now_ist.minute >= 30)
+      and (LAST_HOURLY_DISPATCH_HOUR != 99)
+  )
+
+  if is_hourly_close or is_eod_cas:
+    LAST_HOURLY_DISPATCH_HOUR = 99 if is_eod_cas else now_ist.hour
+    title = (
+        "📊 *NIFTY 1H: EOD POST-CAS UPDATE*"
+        if is_eod_cas
+        else "📊 *NIFTY 1H: HOURLY STATUS UPDATE*"
+    )
     msg = (
-        f"📊 *NIFTY 1H: HOURLY STATUS UPDATE*\n"
+        f"{title}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏰ *Candle Close:* `{now_dt.strftime('%d-%b %I:%M %p')}`\n"
+        f"⏰ *Time:* `{now_ist.strftime('%d-%b %I:%M %p IST')}`\n"
         f"📍 *Nifty Spot:* `{spot:.2f}`\n"
         f"📈 *5 EMA:* `{e5:.2f}`\n"
         f"📉 *10 EMA:* `{e10:.2f}`\n"
@@ -171,8 +184,7 @@ def evaluate_and_notify():
 
 
 def run_live_loop():
-  print("🚀 Starting Live Nifty Gap Scanner (Real-Time Intra-Candle Mode)...")
-  # Runs continuously for ~3 hours per GitHub Action trigger session
+  print("🚀 Starting Live Nifty Gap Scanner (IST Synchronized)...")
   start_time = sleep_time.time()
   while (sleep_time.time() - start_time) < 10800:
     try:
