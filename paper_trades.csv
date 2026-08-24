@@ -1,0 +1,2 @@
+timestamp,action,direction,expiry,spot,buy_strike,sell_strike
+12:16:15 PM IST,OPEN_PENDING_CONFIRMATION,BEAR_PUT_SPREAD,01-Sep-2026,24194.0,24200,24000
