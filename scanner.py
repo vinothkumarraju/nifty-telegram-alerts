@@ -10,7 +10,7 @@ import yfinance as yf
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw"
 CHAT_ID = "7972609109"
-SCAN_INTERVAL_SECONDS = 60  # Scans every 60 seconds
+SCAN_INTERVAL_SECONDS = 60  # Fast 60-second live market checks
 GAP_THRESHOLD = 5.0  # EMA Gap warning threshold (5.0 pts)
 SPREAD_WIDTH = 200  # 200-point ATM/OTM debit spread
 STATE_FILE = "strategy_state.json"
@@ -22,9 +22,9 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def get_target_expiry(dt_ist: datetime) -> str:
-  """Fetches active exchange expiry contracts dynamically.
+  """Dynamically fetches active exchange expiry contracts without hardcoded calendars.
 
-  If days to nearest contract <= 2 days -> Automatically selects next week's
+  - If days to nearest contract <= 2 days -> Automatically selects next week's
   contract.
   """
   today = dt_ist.date()
@@ -88,6 +88,7 @@ def save_state(state):
 
 
 def send_telegram(text: str):
+  """Sends formatted Markdown alert cards to Telegram."""
   if "YOUR_BOT_TOKEN" in BOT_TOKEN:
     return
   url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -171,6 +172,7 @@ def get_pre_market_status():
 
 
 def execute_spread(trade_type, spot, target_expiry, time_str, state, reason):
+  """Squares off existing opposing spread and opens a new 200-pt debit spread."""
   atm_strike = int(round(spot / 50.0) * 50)
   state["previous_position_backup"] = state.get("active_position")
 
@@ -251,7 +253,7 @@ def evaluate_and_notify():
   target_expiry = get_target_expiry(now_ist)
 
   # ==========================================================
-  # 1. PRE-MARKET UPDATE (09:10 AM IST — Window: 09:08 to 09:14)
+  # 1. PRE-MARKET GAP CARD (09:10 AM IST — Window: 09:08 to 09:14)
   # ==========================================================
   if hour == 9 and (8 <= minute <= 14):
     slot_id = f"{date_str}_PRE_MARKET"
@@ -263,12 +265,15 @@ def evaluate_and_notify():
 
         gap_pts = pre_data["gap_pts"]
         gap_pct = pre_data["gap_pct"]
-        if gap_pts > 15:
-          sentiment = "🟢 *GAP UP OPENING EXPECTED*"
-        elif gap_pts < -15:
-          sentiment = "🔴 *GAP DOWN OPENING EXPECTED*"
-        else:
-          sentiment = "⚪ *FLAT OPENING EXPECTED*"
+        sentiment = (
+            "🟢 *GAP UP OPENING EXPECTED*"
+            if gap_pts > 15
+            else (
+                "🔴 *GAP DOWN OPENING EXPECTED*"
+                if gap_pts < -15
+                else "⚪ *FLAT OPENING EXPECTED*"
+            )
+        )
 
         msg = (
             f"🔔 *NIFTY PRE-MARKET SESSION UPDATE*\n"
@@ -280,7 +285,7 @@ def evaluate_and_notify():
             f"📏 *Expected Gap:* `{gap_pts:+.2f} pts` (`{gap_pct:+.2f}%`)\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"👉 *Plan:* Awaiting regular market open (09:15 AM) for live 1H"
-            " crossover verification."
+            " crossover & 5m swing verification."
         )
         send_telegram(msg)
         print(f"[{current_time_str}] Dispatched Pre-Market Update.")
@@ -297,12 +302,16 @@ def evaluate_and_notify():
   prev_ema5 = float(prev_1h["ema_5"])
   prev_ema10 = float(prev_1h["ema_10"])
 
-  # Calculate live 1H EMAs
+  # Live 1H EMA calculation
   k5 = 2.0 / 6.0
   k10 = 2.0 / 11.0
   e5 = (spot * k5) + (prev_ema5 * (1.0 - k5))
   e10 = (spot * k10) + (prev_ema10 * (1.0 - k10))
   gap = abs(e5 - e10)
+
+  # Calculate exact Crossover Invalidation Floor Level
+  s_invalidation = (27.0 * prev_ema10 - 22.0 * prev_ema5) / 5.0
+  safety_buffer = abs(spot - s_invalidation)
 
   closed_1h_time = (
       df_1h.index[-2].strftime("%d-%b %I:%M %p")
@@ -321,18 +330,18 @@ def evaluate_and_notify():
 
   print(
       f"[{current_time_str}] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA:"
-      f" {e10:.2f} | Gap: {gap:.2f} pts | Trend: {trend}"
+      f" {e10:.2f} | Gap: {gap:.2f} pts | Inval Floor: {s_invalidation:.2f}"
   )
 
   # ==========================================================
-  # 2. 1H CANDLE CLOSE AUDIT & ROLLBACK ENGINE
+  # 2. 1H CANDLE CLOSE AUDIT & ROLLBACK ENGINE (ON NEXT 1H CANDLE)
   # ==========================================================
   if state.get("last_verified_1h_candle") != closed_1h_time:
     closed_ema5 = float(prev_1h["ema_5"])
     closed_ema10 = float(prev_1h["ema_10"])
     closed_gap = abs(closed_ema5 - closed_ema10)
 
-    # 2A. Audit Pending Breakout Trade
+    # 2A. Audit Pending Breakout Trade on 1H Candle Close
     if state["pending_confirmation"] is not None:
       pending = state["pending_confirmation"]
       if pending["candle_time"] == closed_1h_time:
@@ -345,23 +354,26 @@ def evaluate_and_notify():
         )
 
         if confirmed:
+          # 1H Crossover CONFIRMED on close -> Permanently lock position!
           state["pending_confirmation"] = None
           state["previous_position_backup"] = None
           save_state(state)
           msg = (
-              f"✅ *1H CANDLE CONFIRMATION VERIFIED*\n"
+              f"🔒 *1H CANDLE CLOSE CONFIRMED — POSITION LOCKED*\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
               f"⏰ *1H Candle Closed:* `{closed_1h_time}`\n"
-              f"📈 *Closed 5 EMA:* `{closed_ema5:.2f}` | *10 EMA:*"
+              f"📈 *Final 5 EMA:* `{closed_ema5:.2f}` | *10 EMA:*"
               f" `{closed_ema10:.2f}`\n"
-              f"📦 *Position:* `{state['active_position']['type']}`\n"
+              f"📏 *Confirmed Gap:* `{closed_gap:.2f} pts`\n"
+              f"📦 *Locked Position:* `{state['active_position']['type']}`\n"
               f"📅 *Expiry:* `{state['active_position']['expiry']}`\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
-              f"🔒 *Status:* 1H crossover confirmed. Position locked."
+              f"✅ *Status:* 1H crossover verified and locked for subsequent"
+              " candles."
           )
           send_telegram(msg)
         else:
-          # Rollback: Close failed position & restore previous
+          # 1H Crossover FAILED on close -> ROLLBACK to previous position!
           failed_pos = state["active_position"]
           backup_pos = state["previous_position_backup"]
           pnl_loss = (
@@ -409,17 +421,19 @@ def evaluate_and_notify():
           save_state(state)
 
           rollback_msg = (
-              f"🚨 *1H CROSSOVER INVALIDATED (ROLLBACK TRIGGERED)*\n"
+              f"🚨 *1H CROSSOVER FAILED ON CLOSE — ROLLBACK TRIGGERED*\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
               f"⏰ *1H Candle Closed:* `{closed_1h_time}`\n"
-              f"⚠️ *Reason:* 5 EMA failed to hold beyond 10 EMA on 1H close.\n"
-              f"❌ *Closed Failed:* `{failed_pos['type']}`\n"
+              f"⚠️ *Failure Reason:* 5 EMA failed to hold beyond 10 EMA at"
+              " candle close.\n"
+              f"❌ *Closed Failed Trade:* `{failed_pos['type']}`\n"
               f"🔄 *Restored Spread:* `{reopened_type}` ({b_strike} /"
               f" {s_strike})\n"
-              f"📅 *Expiry:* `{target_expiry}`\n"
+              f"📅 *Target Expiry:* `{target_expiry}`\n"
               f"📍 *Spot:* `{spot:.2f}`\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
-              f"🛡️ *Action:* Restored previous trend alignment."
+              f"🛡️ *Action:* Restored previous trend position to protect"
+              " capital."
           )
           send_telegram(rollback_msg)
 
@@ -458,7 +472,7 @@ def evaluate_and_notify():
           save_state(state)
 
           fallback_msg = (
-              f"🚀 *PAPER TRADE EXECUTED (1H CANDLE CLOSE CONFIRMATION)*\n"
+              f"🚀 *TRADE EXECUTED ON 1H CANDLE CLOSE CONFIRMATION*\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
               f"{exit_block}"
               f"📦 *Position:* `{spread_name}`\n"
@@ -471,7 +485,7 @@ def evaluate_and_notify():
               f"📏 *Closed 1H Gap:* `{closed_gap:.2f} pts`\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
               f"🔒 *Reason:* 5m breakout did not trigger during the hour, but 1H"
-              " crossover locked on candle close."
+              " crossover finalized and locked on close."
           )
           send_telegram(fallback_msg)
         else:
@@ -484,13 +498,56 @@ def evaluate_and_notify():
         save_state(state)
 
   # ==========================================================
-  # 3. 1H CROSSOVER DETECTION & IMMEDIATE 5M PIVOT MARKING
+  # 3. 09:15 AM INSTANT GAP OPEN EXECUTION (NO 5M WAIT)
   # ==========================================================
   bull_cross = (e5 > e10) and (prev_ema5 <= prev_ema10)
   bear_cross = (e5 < e10) and (prev_ema5 >= prev_ema10)
 
+  # If it is 09:15 AM opening minute and an instant crossover occurs:
+  if hour == 9 and minute == 15:
+    if bull_cross or bear_cross:
+      trade_type = "BULL_CALL_SPREAD" if bull_cross else "BEAR_PUT_SPREAD"
+      if (
+          state.get("active_position") is None
+          or state["active_position"]["type"] != trade_type
+      ):
+        exit_block, spread_name, b_strike, s_strike = execute_spread(
+            trade_type,
+            spot,
+            target_expiry,
+            current_time_str,
+            state,
+            reason="0915_GAP_OPEN",
+        )
+        state["pending_confirmation"] = {
+            "candle_time": forming_1h_time,
+            "expected_direction": "BULLISH" if bull_cross else "BEARISH",
+        }
+        state["last_cross_state"] = "BULL" if bull_cross else "BEAR"
+        save_state(state)
+
+        gap_open_msg = (
+            f"⚡ *09:15 AM INSTANT GAP-OPEN ENTRY EXECUTED*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{exit_block}"
+            f"📦 *Position:* `{spread_name}`\n"
+            f"📅 *Expiry:* `{target_expiry}`\n"
+            f"⏰ *Time:* `{current_time_str}` (Market Open)\n"
+            f"📍 *Open Spot:* `{spot:.2f}`\n"
+            f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
+            f"🔒 *Floor Price:* `{s_invalidation:.2f}` (Buffer:"
+            f" `{safety_buffer:.2f} pts`)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🚀 *Reason:* Overnight gap caused instant 1H crossover on opening"
+            " tick (bypassed 5m candle wait to avoid slippage)."
+        )
+        send_telegram(gap_open_msg)
+        return
+
+  # ==========================================================
+  # 4. 1H CROSSOVER DETECTION & IMMEDIATE 5M PIVOT MARKING
+  # ==========================================================
   if bull_cross and state["last_cross_state"] != "BULL":
-    # Immediately mark Swing High from last 10-12 5-minute candles
     swing_high = float(df_5m["high"].iloc[-12:-2].max())
     state["armed_direction"] = "BULLISH"
     state["swing_pivot"] = swing_high
@@ -503,19 +560,20 @@ def evaluate_and_notify():
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
         f"📍 *Current Spot:* `{spot:.2f}`\n"
-        f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
-        f"📏 *Live Gap:* `{gap:.2f} pts`\n"
+        f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}` (Gap:"
+        f" `{gap:.2f} pts`)\n"
+        f"🔒 *Crossover Invalidation Floor:* `{s_invalidation:.2f}`\n"
+        f"🛡️ *Spot Safety Buffer:* `{safety_buffer:.2f} pts`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 *Marked 5m Swing High Target:* `{swing_high:.2f}`\n"
         f"📅 *Target Expiry:* `{target_expiry}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👉 *Next Action:* Watching for 5m close > `{swing_high:.2f}` to"
-        " trigger Bull Call Spread."
+        f"👉 *Next Action:* Watching for 5m candle to fully close >"
+        f" `{swing_high:.2f}` to trigger Bull Call Spread."
     )
     send_telegram(cross_msg)
 
   elif bear_cross and state["last_cross_state"] != "BEAR":
-    # Immediately mark Swing Low from last 10-12 5-minute candles
     swing_low = float(df_5m["low"].iloc[-12:-2].min())
     state["armed_direction"] = "BEARISH"
     state["swing_pivot"] = swing_low
@@ -528,19 +586,21 @@ def evaluate_and_notify():
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
         f"📍 *Current Spot:* `{spot:.2f}`\n"
-        f"📉 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
-        f"📏 *Live Gap:* `{gap:.2f} pts`\n"
+        f"📉 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}` (Gap:"
+        f" `{gap:.2f} pts`)\n"
+        f"🔒 *Crossover Invalidation Floor:* `{s_invalidation:.2f}`\n"
+        f"🛡️ *Spot Safety Buffer:* `{safety_buffer:.2f} pts`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 *Marked 5m Swing Low Target:* `{swing_low:.2f}`\n"
         f"📅 *Target Expiry:* `{target_expiry}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👉 *Next Action:* Watching for 5m close < `{swing_low:.2f}` to"
-        " trigger Bear Put Spread."
+        f"👉 *Next Action:* Watching for 5m candle to fully close <"
+        f" `{swing_low:.2f}` to trigger Bear Put Spread."
     )
     send_telegram(cross_msg)
 
   # ==========================================================
-  # 4. 5M BREAKOUT CHECK & SPREAD EXECUTION
+  # 5. 5M CLOSED CANDLE BREAKOUT CHECK & SPREAD EXECUTION
   # ==========================================================
   if state["armed_direction"] is not None and state["swing_pivot"] is not None:
     last_closed_5m = df_5m.iloc[-2]
@@ -557,16 +617,9 @@ def evaluate_and_notify():
       direction = state["armed_direction"]
       pivot = float(state["swing_pivot"])
 
-      is_bull_trigger = (
-          (direction == "BULLISH")
-          and (candle_close_5m > pivot)
-          and (gap > GAP_THRESHOLD)
-      )
-      is_bear_trigger = (
-          (direction == "BEARISH")
-          and (candle_close_5m < pivot)
-          and (gap > GAP_THRESHOLD)
-      )
+      # 5m candle must FULLY CLOSE beyond pivot
+      is_bull_trigger = (direction == "BULLISH") and (candle_close_5m > pivot)
+      is_bear_trigger = (direction == "BEARISH") and (candle_close_5m < pivot)
 
       if is_bull_trigger or is_bear_trigger:
         trade_type = (
@@ -583,7 +636,7 @@ def evaluate_and_notify():
               target_expiry,
               current_time_str,
               state,
-              reason="5M_BREAKOUT",
+              reason="5M_BREAKOUT_CLOSED",
           )
 
           state["pending_confirmation"] = {
@@ -595,18 +648,21 @@ def evaluate_and_notify():
           save_state(state)
 
           exec_msg = (
-              f"🚀 *TRADE EXECUTED ON 5M BREAKOUT*\n"
+              f"🚀 *TRADE EXECUTED ON 5M CLOSED CANDLE BREAKOUT*\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
               f"{exit_block}"
               f"📦 *Position:* `{spread_name}`\n"
-              f"📅 *Contract Expiry:* `{target_expiry}`\n"
-              f"⏰ *Executed At:* `{current_time_str}`\n"
+              f"📅 *Expiry:* `{target_expiry}`\n"
+              f"⏰ *Executed At:* `{current_time_str}` (5m Bar:"
+              f" `{candle_time_5m}`)\n"
               f"📍 *Entry Spot:* `{spot:.2f}`\n"
-              f"🎯 *Breakout Level:* `{pivot:.2f}` (5m Close:"
+              f"🎯 *Broken Pivot Level:* `{pivot:.2f}` (5m Close:"
               f" `{candle_close_5m:.2f}`)\n"
-              f"📏 *1H EMA Gap:* `{gap:.2f} pts` (> 5.0 pts)\n"
+              f"🔒 *Floor Price:* `{s_invalidation:.2f}` (Buffer:"
+              f" `{safety_buffer:.2f} pts`)\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
-              f"⏳ *Audit Status:* Awaiting 1H candle close confirmation."
+              f"⏳ *Audit Status:* Awaiting 1H candle close"
+              f" (`{forming_1h_time}`) to verify and lock position."
           )
           send_telegram(exec_msg)
         else:
@@ -617,19 +673,19 @@ def evaluate_and_notify():
         save_state(state)
 
   # ==========================================================
-  # 5. TIGHT GAP WARNING (<= 5.0 PTS) WITH 15-MIN COOLDOWN
+  # 6. TIGHT GAP WARNING (<= 5.0 PTS) WITH 15-MIN COOLDOWN
   # ==========================================================
   elif gap <= GAP_THRESHOLD:
     if (now_ts - state.get("last_tight_gap_ts", 0)) > 900:
       state["last_tight_gap_ts"] = now_ts
       save_state(state)
       msg = (
-          f"⚠️ *LIVE WARNING: EMA GAP <= 5.0 PTS*\n"
+          f"⚠️ *LIVE WARNING: 1H EMA GAP <= 5.0 PTS*\n"
           f"━━━━━━━━━━━━━━━━━━━━━\n"
           f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
           f"📍 *Spot:* `{spot:.2f}`\n"
           f"📏 *Live Gap:* `{gap:.2f} pts`\n"
-          f"🧭 *Direction:* `{trend}`\n"
+          f"🧭 *Current Alignment:* `{trend}`\n"
           f"━━━━━━━━━━━━━━━━━━━━━\n"
           f"👉 *Status:* EMA compression active. Watching for imminent"
           " crossover."
@@ -637,22 +693,17 @@ def evaluate_and_notify():
       send_telegram(msg)
 
   # ==========================================================
-  # 6. SCHEDULED 30-MINUTE STATUS UPDATES & EOD CAS
+  # 7. SCHEDULED 30-MINUTE STATUS UPDATES & EOD CAS
   # ==========================================================
   target_slot_type = None
   target_slot_id = None
 
-  # Slot A: :15 Window (09:15 to 09:22, 10:15 to 10:22, ..., 15:15 to 15:22)
   if 15 <= minute <= 22:
     target_slot_id = f"{date_str}_{hour:02d}_15"
     target_slot_type = "30MIN_STATUS"
-
-  # Slot B: :45 Window (09:45 to 09:52, 10:45 to 10:52, ..., 14:45 to 14:52)
   elif (45 <= minute <= 52) and (hour < 15):
     target_slot_id = f"{date_str}_{hour:02d}_45"
     target_slot_type = "30MIN_STATUS"
-
-  # Slot C: EOD CAS Finalization (15:30 to 15:35)
   elif hour == 15 and (30 <= minute <= 35):
     target_slot_id = f"{date_str}_EOD_CAS"
     target_slot_type = "EOD_CAS"
@@ -688,6 +739,7 @@ def evaluate_and_notify():
         f"📈 *Live 5 EMA:* `{e5:.2f}`\n"
         f"📉 *Live 10 EMA:* `{e10:.2f}`\n"
         f"📏 *EMA Gap:* `{gap:.2f} pts`\n"
+        f"🔒 *Floor Price:* `{s_invalidation:.2f}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🧭 *Trend:* `{trend}`\n"
         f"{status_line}"
@@ -699,7 +751,7 @@ def evaluate_and_notify():
 def run_live_loop():
   now_ist = datetime.now(IST)
 
-  # Weekend Blocker
+  # Weekend Blocker (Saturday=5, Sunday=6)
   if now_ist.weekday() >= 5:
     print(
         f"🛑 [{now_ist.strftime('%A, %I:%M %p IST')}] Weekend detected. Market"
