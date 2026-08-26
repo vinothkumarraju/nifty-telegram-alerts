@@ -3,30 +3,28 @@ import json
 import os
 import time as sleep_time
 import traceback
+import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
 
-# ==================== CONFIGURATION ====================
+# ==================== STRATEGY CONFIGURATION ====================
 BOT_TOKEN = "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw"
 CHAT_ID = "7972609109"
 SCAN_INTERVAL_SECONDS = 60  # Fast 60-second live market checks
-GAP_THRESHOLD = 5.0  # EMA Gap warning threshold (5.0 pts)
-SPREAD_WIDTH = 200  # 200-point ATM/OTM debit spread
+SPREAD_WIDTH = 200  # 200-point ATM/OTM Debit Spread
+GAP_THRESHOLD = 5.0  # EMA Gap compression alert threshold (5.0 pts)
+POSITION_QTY = 650  # Position quantity (10 lots @ 65 qty / ₹10L Capital)
 STATE_FILE = "strategy_state.json"
 TRADE_LOG_FILE = "paper_trades.csv"
 
 # Indian Standard Time (UTC + 5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
-# =======================================================
+# ================================================================
 
 
 def get_target_expiry(dt_ist: datetime) -> str:
-  """Dynamically fetches active exchange expiry contracts without hardcoded calendars.
-
-  - If days to nearest contract <= 2 days -> Automatically selects next week's
-  contract.
-  """
+  """Dynamically fetches active exchange expiry contracts."""
   today = dt_ist.date()
   try:
     ticker = yf.Ticker("^NSEI")
@@ -46,9 +44,9 @@ def get_target_expiry(dt_ist: datetime) -> str:
         )
         return target.strftime("%d-%b-%Y")
   except Exception as e:
-    print(f"Option chain fetch warning: {e}")
+    print(f"Option chain fetch notice: {e}")
 
-  # Fallback calculation
+  # Fallback to Tuesday contract calculation
   days_to_tuesday = (1 - today.weekday()) % 7
   nearest_tuesday = today + timedelta(days=days_to_tuesday)
   dte = (nearest_tuesday - today).days
@@ -62,6 +60,7 @@ def load_state():
   default_state = {
       "armed_direction": None,
       "swing_pivot": None,
+      "pivot_candle_time": None,
       "armed_candle_time": None,
       "active_position": None,
       "pending_confirmation": None,
@@ -94,9 +93,11 @@ def send_telegram(text: str):
   url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
   payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
   try:
-    requests.post(url, json=payload, timeout=10)
+    res = requests.post(url, json=payload, timeout=10)
+    if res.status_code != 200:
+      print(f"Telegram API response ({res.status_code}): {res.text}")
   except Exception as e:
-    print(f"Telegram error: {e}")
+    print(f"Telegram dispatch error: {e}")
 
 
 def log_paper_trade(trade_data):
@@ -108,67 +109,150 @@ def log_paper_trade(trade_data):
 
 
 def fetch_market_data():
-  try:
-    df_1h = yf.download(
-        tickers="^NSEI",
-        period="5d",
-        interval="1h",
-        progress=False,
-        auto_adjust=True,
-    )
-    df_5m = yf.download(
-        tickers="^NSEI",
-        period="5d",
-        interval="5m",
-        progress=False,
-        auto_adjust=True,
-    )
-    if df_1h is None or df_1h.empty or len(df_1h) < 5:
-      return None, None
-    if df_5m is None or df_5m.empty or len(df_5m) < 15:
-      return None, None
+  """Fetches 1H and 5M candles with retry logic and error resilience."""
+  for attempt in range(3):
+    try:
+      df_1h = yf.download(
+          tickers="^NSEI",
+          period="5d",
+          interval="1h",
+          progress=False,
+          auto_adjust=True,
+      )
+      df_5m = yf.download(
+          tickers="^NSEI",
+          period="5d",
+          interval="5m",
+          progress=False,
+          auto_adjust=True,
+      )
+      if df_1h is None or df_1h.empty or len(df_1h) < 3:
+        sleep_time.sleep(2)
+        continue
+      if df_5m is None or df_5m.empty or len(df_5m) < 5:
+        sleep_time.sleep(2)
+        continue
 
-    for df in [df_1h, df_5m]:
-      if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [col[0].lower() for col in df.columns]
-      else:
-        df.columns = [col.lower() for col in df.columns]
+      for df in [df_1h, df_5m]:
+        if isinstance(df.columns, pd.MultiIndex):
+          df.columns = [col[0].lower() for col in df.columns]
+        else:
+          df.columns = [col.lower() for col in df.columns]
 
-    df_1h["ema_5"] = df_1h["close"].ewm(span=5, adjust=False).mean()
-    df_1h["ema_10"] = df_1h["close"].ewm(span=10, adjust=False).mean()
-    return df_1h, df_5m
-  except Exception as e:
-    print(f"Data fetch error: {e}")
-    return None, None
+      df_1h["ema_5"] = df_1h["close"].ewm(span=5, adjust=False).mean()
+      df_1h["ema_10"] = df_1h["close"].ewm(span=10, adjust=False).mean()
+      return df_1h, df_5m
+    except Exception as e:
+      print(f"Data fetch attempt {attempt+1} warning: {e}")
+      sleep_time.sleep(2)
+  return None, None
 
 
 def get_pre_market_status():
+  """Calculates pre-market gap using historical close and live quote."""
   try:
     ticker = yf.Ticker("^NSEI")
     daily_df = ticker.history(period="5d", interval="1d")
-    if daily_df is None or daily_df.empty or len(daily_df) < 2:
+    if daily_df is None or daily_df.empty:
       return None
 
-    prev_close = float(daily_df["Close"].iloc[-2])
-    live_df = ticker.history(period="1d", interval="1m")
-    current_spot = (
-        float(live_df["Close"].iloc[-1])
-        if not live_df.empty
+    prev_close = (
+        float(daily_df["Close"].iloc[-2])
+        if len(daily_df) >= 2
         else float(daily_df["Close"].iloc[-1])
     )
 
-    gap_pts = current_spot - prev_close
+    live_spot = None
+    try:
+      fast_info = ticker.fast_info
+      if hasattr(fast_info, "last_price") and fast_info.last_price is not None:
+        live_spot = float(fast_info.last_price)
+    except Exception:
+      pass
+
+    if live_spot is None:
+      live_df = ticker.history(period="1d", interval="1m")
+      if live_df is not None and not live_df.empty:
+        live_spot = float(live_df["Close"].iloc[-1])
+      else:
+        live_spot = float(daily_df["Close"].iloc[-1])
+
+    gap_pts = live_spot - prev_close
     gap_pct = (gap_pts / prev_close) * 100.0
 
     return {
         "prev_close": prev_close,
-        "pre_market_spot": current_spot,
+        "pre_market_spot": live_spot,
         "gap_pts": gap_pts,
         "gap_pct": gap_pct,
     }
   except Exception as e:
-    print(f"Pre-market fetch error: {e}")
+    print(f"Pre-market status notice: {e}")
     return None
+
+
+def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
+  """Iterates backward candle-by-candle through past 5m candles to locate the exact FIRST local swing pivot.
+
+  - BULLISH: Scans backward to find the first candle where High[k] >= High[k-1]
+  and High[k] >= High[k+1].
+  - BEARISH: Scans backward to find the first candle where Low[k] <= Low[k-1]
+  and Low[k] <= Low[k+1].
+  """
+  highs = df_5m["high"].values
+  lows = df_5m["low"].values
+  n = len(df_5m)
+
+  end_idx = n - 2  # Start from last completed 5m candle
+  start_idx = max(1, end_idx - max_lookback)
+
+  if direction == "BULLISH":
+    for k in range(end_idx, start_idx, -1):
+      is_peak = True
+      if k > 0 and highs[k] < highs[k - 1]:
+        is_peak = False
+      if k < n - 1 and highs[k] < highs[k + 1]:
+        is_peak = False
+      if is_peak:
+        c_time = (
+            df_5m.index[k].strftime("%I:%M %p")
+            if hasattr(df_5m.index[k], "strftime")
+            else str(df_5m.index[k])
+        )
+        return float(highs[k]), c_time
+
+    # Fallback to highest high in lookback
+    fb_k = int(np.argmax(highs[start_idx : end_idx + 1]) + start_idx)
+    c_time = (
+        df_5m.index[fb_k].strftime("%I:%M %p")
+        if hasattr(df_5m.index[fb_k], "strftime")
+        else str(df_5m.index[fb_k])
+    )
+    return float(highs[fb_k]), c_time
+
+  else:  # BEARISH
+    for k in range(end_idx, start_idx, -1):
+      is_trough = True
+      if k > 0 and lows[k] > lows[k - 1]:
+        is_trough = False
+      if k < n - 1 and lows[k] > lows[k + 1]:
+        is_trough = False
+      if is_trough:
+        c_time = (
+            df_5m.index[k].strftime("%I:%M %p")
+            if hasattr(df_5m.index[k], "strftime")
+            else str(df_5m.index[k])
+        )
+        return float(lows[k]), c_time
+
+    # Fallback to lowest low in lookback
+    fb_k = int(np.argmin(lows[start_idx : end_idx + 1]) + start_idx)
+    c_time = (
+        df_5m.index[fb_k].strftime("%I:%M %p")
+        if hasattr(df_5m.index[fb_k], "strftime")
+        else str(df_5m.index[fb_k])
+    )
+    return float(lows[fb_k]), c_time
 
 
 def execute_spread(trade_type, spot, target_expiry, time_str, state, reason):
@@ -184,17 +268,20 @@ def execute_spread(trade_type, spot, target_expiry, time_str, state, reason):
         if "BULL" in old_pos["type"]
         else (old_pos["entry_spot"] - spot)
     )
+    rupee_pnl = (
+        points_captured * 0.22 * POSITION_QTY
+    )  # 200-pt spread delta ~0.22
     pnl_str = (
-        f"+{points_captured:.2f} pts"
+        f"+{points_captured:.2f} pts (~+₹{rupee_pnl:,.0f})"
         if points_captured > 0
-        else f"{points_captured:.2f} pts"
+        else f"{points_captured:.2f} pts (~-₹{abs(rupee_pnl):,.0f})"
     )
 
     exit_msg_block = (
         f"🔄 *SQUARED OFF PREVIOUS POSITION*\n"
         f"Type: `{old_pos['type']}` | Expiry: `{old_pos['expiry']}`\n"
         f"Strikes: `{old_pos['buy_strike']} / {old_pos['sell_strike']}`\n"
-        f"Captured PnL: `{pnl_str}`\n"
+        f"Captured Spot PnL: `{pnl_str}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
     )
     log_paper_trade({
@@ -206,6 +293,7 @@ def execute_spread(trade_type, spot, target_expiry, time_str, state, reason):
         "buy_strike": old_pos["buy_strike"],
         "sell_strike": old_pos["sell_strike"],
         "pnl_pts": round(points_captured, 2),
+        "est_net_inr": round(rupee_pnl, 2),
     })
 
   if "BULL" in trade_type:
@@ -237,6 +325,7 @@ def execute_spread(trade_type, spot, target_expiry, time_str, state, reason):
       "buy_strike": buy_strike,
       "sell_strike": sell_strike,
       "pnl_pts": "",
+      "est_net_inr": "",
   })
 
   return exit_msg_block, spread_name, buy_strike, sell_strike
@@ -253,7 +342,7 @@ def evaluate_and_notify():
   target_expiry = get_target_expiry(now_ist)
 
   # ==========================================================
-  # 1. PRE-MARKET GAP CARD (09:10 AM IST — Window: 09:08 to 09:14)
+  # 1. PRE-MARKET GAP CARD (09:08 AM to 09:14 AM IST)
   # ==========================================================
   if hour == 9 and (8 <= minute <= 14):
     slot_id = f"{date_str}_PRE_MARKET"
@@ -285,14 +374,18 @@ def evaluate_and_notify():
             f"📏 *Expected Gap:* `{gap_pts:+.2f} pts` (`{gap_pct:+.2f}%`)\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"👉 *Plan:* Awaiting regular market open (09:15 AM) for live 1H"
-            " crossover & 5m swing verification."
+            " crossover & dynamic 5m swing verification."
         )
         send_telegram(msg)
         print(f"[{current_time_str}] Dispatched Pre-Market Update.")
 
-  # Fetch 1H and 5M Data
+  # Fetch Intraday 1H and 5M Market Data
   df_1h, df_5m = fetch_market_data()
   if df_1h is None or df_5m is None:
+    print(
+        f"[{current_time_str}] Market data fetch empty or throttled. Will"
+        " retry on next 60s cycle."
+    )
     return
 
   spot = float(df_5m["close"].iloc[-1])
@@ -302,14 +395,14 @@ def evaluate_and_notify():
   prev_ema5 = float(prev_1h["ema_5"])
   prev_ema10 = float(prev_1h["ema_10"])
 
-  # Live 1H EMA calculation
+  # Live 1H EMA formula (Fast α=1/3, Slow α=2/11)
   k5 = 2.0 / 6.0
   k10 = 2.0 / 11.0
   e5 = (spot * k5) + (prev_ema5 * (1.0 - k5))
   e10 = (spot * k10) + (prev_ema10 * (1.0 - k10))
   gap = abs(e5 - e10)
 
-  # Calculate exact Crossover Invalidation Floor Level
+  # Exact Crossover Invalidation Floor Level
   s_invalidation = (27.0 * prev_ema10 - 22.0 * prev_ema5) / 5.0
   safety_buffer = abs(spot - s_invalidation)
 
@@ -354,7 +447,7 @@ def evaluate_and_notify():
         )
 
         if confirmed:
-          # 1H Crossover CONFIRMED on close -> Permanently lock position!
+          # Crossover CONFIRMED on close -> Permanently lock position
           state["pending_confirmation"] = None
           state["previous_position_backup"] = None
           save_state(state)
@@ -369,11 +462,11 @@ def evaluate_and_notify():
               f"📅 *Expiry:* `{state['active_position']['expiry']}`\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
               f"✅ *Status:* 1H crossover verified and locked for subsequent"
-              " candles."
+              " market sessions."
           )
           send_telegram(msg)
         else:
-          # 1H Crossover FAILED on close -> ROLLBACK to previous position!
+          # Crossover FAILED on close -> ROLLBACK to previous position
           failed_pos = state["active_position"]
           backup_pos = state["previous_position_backup"]
           pnl_loss = (
@@ -381,6 +474,7 @@ def evaluate_and_notify():
               if "BULL" in failed_pos["type"]
               else (failed_pos["entry_spot"] - spot)
           )
+          rupee_loss = pnl_loss * 0.22 * POSITION_QTY
 
           log_paper_trade({
               "timestamp": current_time_str,
@@ -391,6 +485,7 @@ def evaluate_and_notify():
               "buy_strike": failed_pos["buy_strike"],
               "sell_strike": failed_pos["sell_strike"],
               "pnl_pts": round(pnl_loss, 2),
+              "est_net_inr": round(rupee_loss, 2),
           })
 
           reopened_type = (
@@ -426,8 +521,9 @@ def evaluate_and_notify():
               f"⏰ *1H Candle Closed:* `{closed_1h_time}`\n"
               f"⚠️ *Failure Reason:* 5 EMA failed to hold beyond 10 EMA at"
               " candle close.\n"
-              f"❌ *Closed Failed Trade:* `{failed_pos['type']}`\n"
-              f"🔄 *Restored Spread:* `{reopened_type}` ({b_strike} /"
+              f"❌ *Closed Failed Trade:* `{failed_pos['type']}` (Loss:"
+              f" `{pnl_loss:+.2f} pts`)\n"
+              f"🔄 *Restored Position:* `{reopened_type}` ({b_strike} /"
               f" {s_strike})\n"
               f"📅 *Target Expiry:* `{target_expiry}`\n"
               f"📍 *Spot:* `{spot:.2f}`\n"
@@ -503,7 +599,6 @@ def evaluate_and_notify():
   bull_cross = (e5 > e10) and (prev_ema5 <= prev_ema10)
   bear_cross = (e5 < e10) and (prev_ema5 >= prev_ema10)
 
-  # If it is 09:15 AM opening minute and an instant crossover occurs:
   if hour == 9 and minute == 15:
     if bull_cross or bear_cross:
       trade_type = "BULL_CALL_SPREAD" if bull_cross else "BEAR_PUT_SPREAD"
@@ -532,25 +627,29 @@ def evaluate_and_notify():
             f"{exit_block}"
             f"📦 *Position:* `{spread_name}`\n"
             f"📅 *Expiry:* `{target_expiry}`\n"
-            f"⏰ *Time:* `{current_time_str}` (Market Open)\n"
+            f"⏰ *Time:* `{current_time_str}` (Market Open Bell)\n"
             f"📍 *Open Spot:* `{spot:.2f}`\n"
             f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
             f"🔒 *Floor Price:* `{s_invalidation:.2f}` (Buffer:"
             f" `{safety_buffer:.2f} pts`)\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"🚀 *Reason:* Overnight gap caused instant 1H crossover on opening"
-            " tick (bypassed 5m candle wait to avoid slippage)."
+            " tick (bypassed 5m candle wait to eliminate slippage)."
         )
         send_telegram(gap_open_msg)
         return
 
   # ==========================================================
-  # 4. 1H CROSSOVER DETECTION & IMMEDIATE 5M PIVOT MARKING
+  # 4. 1H CROSSOVER DETECTION -> CANDLE-BY-CANDLE BACKWARD SCAN
   # ==========================================================
   if bull_cross and state["last_cross_state"] != "BULL":
-    swing_high = float(df_5m["high"].iloc[-12:-2].max())
+    # Dynamic backward scan to find the exact FIRST local swing peak
+    first_swing_high, pivot_time = find_first_swing_pivot(
+        df_5m, direction="BULLISH"
+    )
     state["armed_direction"] = "BULLISH"
-    state["swing_pivot"] = swing_high
+    state["swing_pivot"] = first_swing_high
+    state["pivot_candle_time"] = pivot_time
     state["armed_candle_time"] = forming_1h_time
     state["last_cross_state"] = "BULL"
     save_state(state)
@@ -565,18 +664,23 @@ def evaluate_and_notify():
         f"🔒 *Crossover Invalidation Floor:* `{s_invalidation:.2f}`\n"
         f"🛡️ *Spot Safety Buffer:* `{safety_buffer:.2f} pts`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 *Marked 5m Swing High Target:* `{swing_high:.2f}`\n"
+        f"🎯 *First Swing High Found:* `{first_swing_high:.2f}` (Bar:"
+        f" `{pivot_time}`)\n"
         f"📅 *Target Expiry:* `{target_expiry}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👉 *Next Action:* Watching for 5m candle to fully close >"
-        f" `{swing_high:.2f}` to trigger Bull Call Spread."
+        f"👉 *Next Action:* Watching for live price to cross >"
+        f" `{first_swing_high:.2f}` to trigger immediate Bull Call Spread."
     )
     send_telegram(cross_msg)
 
   elif bear_cross and state["last_cross_state"] != "BEAR":
-    swing_low = float(df_5m["low"].iloc[-12:-2].min())
+    # Dynamic backward scan to find the exact FIRST local swing trough
+    first_swing_low, pivot_time = find_first_swing_pivot(
+        df_5m, direction="BEARISH"
+    )
     state["armed_direction"] = "BEARISH"
-    state["swing_pivot"] = swing_low
+    state["swing_pivot"] = first_swing_low
+    state["pivot_candle_time"] = pivot_time
     state["armed_candle_time"] = forming_1h_time
     state["last_cross_state"] = "BEAR"
     save_state(state)
@@ -591,85 +695,69 @@ def evaluate_and_notify():
         f"🔒 *Crossover Invalidation Floor:* `{s_invalidation:.2f}`\n"
         f"🛡️ *Spot Safety Buffer:* `{safety_buffer:.2f} pts`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 *Marked 5m Swing Low Target:* `{swing_low:.2f}`\n"
+        f"🎯 *First Swing Low Found:* `{first_swing_low:.2f}` (Bar:"
+        f" `{pivot_time}`)\n"
         f"📅 *Target Expiry:* `{target_expiry}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👉 *Next Action:* Watching for 5m candle to fully close <"
-        f" `{swing_low:.2f}` to trigger Bear Put Spread."
+        f"👉 *Next Action:* Watching for live price to cross <"
+        f" `{first_swing_low:.2f}` to trigger immediate Bear Put Spread."
     )
     send_telegram(cross_msg)
 
   # ==========================================================
-  # 5. 5M CLOSED CANDLE BREAKOUT CHECK & SPREAD EXECUTION
+  # 5. REAL-TIME 5M PIVOT BREAKOUT EXECUTION (NO 5M WAIT)
   # ==========================================================
   if state["armed_direction"] is not None and state["swing_pivot"] is not None:
-    last_closed_5m = df_5m.iloc[-2]
-    candle_close_5m = float(last_closed_5m["close"])
-    candle_time_5m = (
-        df_5m.index[-2].strftime("%I:%M %p")
-        if hasattr(df_5m.index[-2], "strftime")
-        else str(df_5m.index[-2])
-    )
+    direction = state["armed_direction"]
+    pivot = float(state["swing_pivot"])
 
-    if state.get("last_processed_5m_candle") != candle_time_5m:
-      state["last_processed_5m_candle"] = candle_time_5m
+    # Real-time intra-candle breakout condition
+    is_bull_cross = (direction == "BULLISH") and (spot > pivot)
+    is_bear_cross = (direction == "BEARISH") and (spot < pivot)
 
-      direction = state["armed_direction"]
-      pivot = float(state["swing_pivot"])
+    if is_bull_cross or is_bear_cross:
+      trade_type = "BULL_CALL_SPREAD" if is_bull_cross else "BEAR_PUT_SPREAD"
 
-      # 5m candle must FULLY CLOSE beyond pivot
-      is_bull_trigger = (direction == "BULLISH") and (candle_close_5m > pivot)
-      is_bear_trigger = (direction == "BEARISH") and (candle_close_5m < pivot)
-
-      if is_bull_trigger or is_bear_trigger:
-        trade_type = (
-            "BULL_CALL_SPREAD" if is_bull_trigger else "BEAR_PUT_SPREAD"
+      if (
+          state.get("active_position") is None
+          or state["active_position"]["type"] != trade_type
+      ):
+        exit_block, spread_name, b_strike, s_strike = execute_spread(
+            trade_type,
+            spot,
+            target_expiry,
+            current_time_str,
+            state,
+            reason="DYNAMIC_PIVOT_LIVE_BREAKOUT",
         )
 
-        if (
-            state.get("active_position") is None
-            or state["active_position"]["type"] != trade_type
-        ):
-          exit_block, spread_name, b_strike, s_strike = execute_spread(
-              trade_type,
-              spot,
-              target_expiry,
-              current_time_str,
-              state,
-              reason="5M_BREAKOUT_CLOSED",
-          )
+        state["pending_confirmation"] = {
+            "candle_time": forming_1h_time,
+            "expected_direction": direction,
+        }
+        state["armed_direction"] = None
+        state["swing_pivot"] = None
+        save_state(state)
 
-          state["pending_confirmation"] = {
-              "candle_time": forming_1h_time,
-              "expected_direction": direction,
-          }
-          state["armed_direction"] = None
-          state["swing_pivot"] = None
-          save_state(state)
-
-          exec_msg = (
-              f"🚀 *TRADE EXECUTED ON 5M CLOSED CANDLE BREAKOUT*\n"
-              f"━━━━━━━━━━━━━━━━━━━━━\n"
-              f"{exit_block}"
-              f"📦 *Position:* `{spread_name}`\n"
-              f"📅 *Expiry:* `{target_expiry}`\n"
-              f"⏰ *Executed At:* `{current_time_str}` (5m Bar:"
-              f" `{candle_time_5m}`)\n"
-              f"📍 *Entry Spot:* `{spot:.2f}`\n"
-              f"🎯 *Broken Pivot Level:* `{pivot:.2f}` (5m Close:"
-              f" `{candle_close_5m:.2f}`)\n"
-              f"🔒 *Floor Price:* `{s_invalidation:.2f}` (Buffer:"
-              f" `{safety_buffer:.2f} pts`)\n"
-              f"━━━━━━━━━━━━━━━━━━━━━\n"
-              f"⏳ *Audit Status:* Awaiting 1H candle close"
-              f" (`{forming_1h_time}`) to verify and lock position."
-          )
-          send_telegram(exec_msg)
-        else:
-          state["armed_direction"] = None
-          state["swing_pivot"] = None
-          save_state(state)
+        exec_msg = (
+            f"🚀 *TRADE EXECUTED ON DYNAMIC PIVOT BREAKOUT*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{exit_block}"
+            f"📦 *Position:* `{spread_name}`\n"
+            f"📅 *Expiry:* `{target_expiry}`\n"
+            f"⏰ *Execution Time:* `{current_time_str}` (Live Tick Trigger)\n"
+            f"📍 *Entry Spot:* `{spot:.2f}`\n"
+            f"🎯 *Breached First Swing Pivot:* `{pivot:.2f}`\n"
+            f"🔒 *Floor Price:* `{s_invalidation:.2f}` (Buffer:"
+            f" `{safety_buffer:.2f} pts`)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏳ *Audit Status:* Tagged `PENDING_1H_CLOSE`. Awaiting 1H candle"
+            f" close (`{forming_1h_time}`) to verify and lock position."
+        )
+        send_telegram(exec_msg)
       else:
+        state["armed_direction"] = None
+        state["swing_pivot"] = None
         save_state(state)
 
   # ==========================================================
@@ -693,15 +781,15 @@ def evaluate_and_notify():
       send_telegram(msg)
 
   # ==========================================================
-  # 7. SCHEDULED 30-MINUTE STATUS UPDATES & EOD CAS
+  # 7. SCHEDULED 30-MINUTE STATUS UPDATES & EOD CAS (WINDOW: :14 to :24 & :44 to :54)
   # ==========================================================
   target_slot_type = None
   target_slot_id = None
 
-  if 15 <= minute <= 22:
+  if 14 <= minute <= 24:
     target_slot_id = f"{date_str}_{hour:02d}_15"
     target_slot_type = "30MIN_STATUS"
-  elif (45 <= minute <= 52) and (hour < 15):
+  elif (44 <= minute <= 54) and (hour < 15):
     target_slot_id = f"{date_str}_{hour:02d}_45"
     target_slot_type = "30MIN_STATUS"
   elif hour == 15 and (30 <= minute <= 35):
@@ -715,10 +803,10 @@ def evaluate_and_notify():
     if target_slot_type == "EOD_CAS":
       title = "📊 *NIFTY 1H: EOD POST-CAS FINAL UPDATE*"
       status_line = "✅ *Status:* Market Closed & CAS Finalized."
-    elif hour == 9 and minute <= 22:
+    elif hour == 9 and minute <= 24:
       title = "📊 *NIFTY 1H: MARKET OPEN STATUS (09:15 AM)*"
       status_line = "🚀 *Status:* Regular Session Active."
-    elif 15 <= minute <= 22:
+    elif 14 <= minute <= 24:
       title = (
           f"📊 *NIFTY 1H: HOURLY CANDLE CLOSE UPDATE"
           f" ({now_ist.strftime('%I:15 %p')})*"
@@ -749,50 +837,54 @@ def evaluate_and_notify():
 
 
 def run_live_loop():
-  now_ist = datetime.now(IST)
+  """Continuous 24/7 background engine that intelligently sleeps during off-hours
 
-  # Weekend Blocker (Saturday=5, Sunday=6)
-  if now_ist.weekday() >= 5:
-    print(
-        f"🛑 [{now_ist.strftime('%A, %I:%M %p IST')}] Weekend detected. Market"
-        " is closed. Terminating."
-    )
-    return
+  and actively monitors every 60 seconds during live market hours.
+  """
+  print("🚀 Nifty Live Scanner & Paper Trader Engine Initialized.")
 
-  # Off-Hours Blocker (09:05 AM to 03:35 PM IST)
-  current_minutes = now_ist.hour * 60 + now_ist.minute
-  if current_minutes < (9 * 60 + 5) or current_minutes > (15 * 60 + 35):
-    print(
-        f"🛑 [{now_ist.strftime('%I:%M:%S %p IST')}] Outside trading hours"
-        " (09:05 AM - 03:35 PM IST). Terminating."
-    )
-    return
+  while True:
+    now_ist = datetime.now(IST)
+    hour = now_ist.hour
+    minute = now_ist.minute
+    current_minutes = hour * 60 + minute
 
-  print(
-      "🚀 Starting Nifty 60-Second Live Scanner, Breakout Engine & 30-Min"
-      " Dispatcher..."
-  )
-  start_time = sleep_time.time()
-
-  while (sleep_time.time() - start_time) < 10800:
-    loop_ist = datetime.now(IST)
-
-    if (loop_ist.hour == 15 and loop_ist.minute >= 35) or loop_ist.hour > 15:
+    # 1. Weekend Handler (Saturday=5, Sunday=6) -> Sleep for 1 hour
+    if now_ist.weekday() >= 5:
       print(
-          f"🛑 [{loop_ist.strftime('%I:%M:%S %p IST')}] Market Closed (3:35"
-          " PM). Shutting down scanner."
+          f"😴 [{now_ist.strftime('%A, %I:%M %p IST')}] Weekend. Sleeping for 1"
+          " hour..."
       )
-      break
+      sleep_time.sleep(3600)
+      continue
 
+    # 2. Pre-market Early Morning (Before 09:05 AM IST) -> Sleep until 09:08 AM
+    if current_minutes < (9 * 60 + 5):
+      sleep_sec = max(60, ((9 * 60 + 8) - current_minutes) * 60)
+      print(
+          f"😴 [{now_ist.strftime('%I:%M %p IST')}] Pre-market. Sleeping until"
+          f" 09:08 AM IST ({sleep_sec//60} mins)..."
+      )
+      sleep_time.sleep(min(sleep_sec, 300))
+      continue
+
+    # 3. Post-Market Evening (After 03:35 PM IST) -> Sleep until tomorrow morning 09:05 AM
+    if current_minutes > (15 * 60 + 35):
+      print(
+          f"😴 [{now_ist.strftime('%I:%M %p IST')}] Market Closed. Sleeping"
+          " until next morning..."
+      )
+      sleep_time.sleep(1800)  # Sleep in 30-min increments
+      continue
+
+    # 4. Active Live Market Session (09:05 AM - 03:35 PM IST)
     try:
       evaluate_and_notify()
     except Exception as e:
-      print(f"Execution error: {e}")
+      print(f"Execution cycle notice: {e}")
       traceback.print_exc()
 
     sleep_time.sleep(SCAN_INTERVAL_SECONDS)
-
-  print("🏁 Scanner session completed successfully.")
 
 
 if __name__ == "__main__":
