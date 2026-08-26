@@ -9,13 +9,11 @@ import requests
 import yfinance as yf
 
 # ==================== STRATEGY CONFIGURATION ====================
-# Credentials (reads from GitHub Secrets or falls back to defaults)
 BOT_TOKEN = os.getenv(
     "BOT_TOKEN", "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw"
 )
 CHAT_ID = os.getenv("CHAT_ID", "7972609109")
 
-# Strategy Parameters
 SCAN_INTERVAL_SECONDS = 60  # Scan frequency (60 seconds)
 SPREAD_WIDTH = 200  # 200-point ATM/OTM Debit Spread
 GAP_THRESHOLD = 5.0  # EMA Gap compression alert threshold (5.0 pts)
@@ -114,8 +112,25 @@ def send_telegram(text: str):
     res = requests.post(url, json=payload, timeout=10)
     if res.status_code != 200:
       print(f"Telegram API warning ({res.status_code}): {res.text}")
+    else:
+      print("Telegram message dispatched successfully.")
   except Exception as e:
     print(f"Telegram dispatch error: {e}")
+
+
+def send_telegram_error(err_title: str, err_detail: str):
+  """Sends an instant red alert card to Telegram whenever an exception occurs."""
+  now_ist = datetime.now(IST)
+  msg = (
+      f"🚨 *NIFTY BOT RUNTIME ERROR / EXCEPTION*\n"
+      f"━━━━━━━━━━━━━━━━━━━━━\n"
+      f"⏰ *Time:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
+      f"⚠️ *Issue:* `{err_title}`\n"
+      f"📋 *Traceback:* `{str(err_detail)[:250]}`\n"
+      f"━━━━━━━━━━━━━━━━━━━━━\n"
+      f"🔄 *Status:* Attempting auto-recovery in 60 seconds."
+  )
+  send_telegram(msg)
 
 
 def log_paper_trade(trade_data):
@@ -128,9 +143,9 @@ def log_paper_trade(trade_data):
 
 
 def fetch_market_data():
-  """Fetches 1H and 5M candles with session headers to prevent cloud IP rate-limiting.
+  """Fetches 1H, 5M, and daily close data with session headers.
 
-  Includes 3-attempt retry loop.
+  Includes 3-attempt retry loop. Returns: df_1h, df_5m, prev_close
   """
   session = requests.Session()
   session.headers.update({
@@ -145,6 +160,7 @@ def fetch_market_data():
       ticker = yf.Ticker("^NSEI", session=session)
       df_1h = ticker.history(period="5d", interval="1h")
       df_5m = ticker.history(period="5d", interval="5m")
+      df_daily = ticker.history(period="5d", interval="1d")
 
       if df_1h is None or df_1h.empty or len(df_1h) < 3:
         sleep_time.sleep(2)
@@ -158,11 +174,33 @@ def fetch_market_data():
 
       df_1h["ema_5"] = df_1h["close"].ewm(span=5, adjust=False).mean()
       df_1h["ema_10"] = df_1h["close"].ewm(span=10, adjust=False).mean()
-      return df_1h, df_5m
+
+      # Determine yesterday's official closing price
+      prev_close = None
+      if df_daily is not None and not df_daily.empty:
+        prev_close = (
+            float(df_daily["Close"].iloc[-2])
+            if len(df_daily) >= 2
+            else float(df_daily["Close"].iloc[-1])
+        )
+
+      return df_1h, df_5m, prev_close
     except Exception as e:
       print(f"Data fetch attempt {attempt+1} notice: {e}")
       sleep_time.sleep(2)
-  return None, None
+  return None, None, None
+
+
+def get_prev_close_diff_str(spot: float, prev_close: float) -> str:
+  """Formats how many points Nifty is above (+) or below (-) yesterday's close.
+
+  Example output: "(+45.20 pts from Prev Close: 24,140.30)"
+  """
+  if prev_close is None or prev_close <= 0:
+    return ""
+  diff = spot - prev_close
+  sign = "+" if diff > 0 else ""
+  return f"({sign}{diff:.2f} pts from Prev Close: {prev_close:.2f})"
 
 
 def get_pre_market_status():
@@ -221,7 +259,7 @@ def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
   lows = df_5m["low"].values
   n = len(df_5m)
 
-  end_idx = n - 2
+  end_idx = n - 2  # Start from last completed 5m candle
   start_idx = max(1, end_idx - max_lookback)
 
   if direction == "BULLISH":
@@ -239,6 +277,7 @@ def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
         )
         return float(highs[k]), c_time
 
+    # Fallback to highest high in lookback
     fb_k = int(np.argmax(highs[start_idx : end_idx + 1]) + start_idx)
     c_time = (
         df_5m.index[fb_k].strftime("%I:%M %p")
@@ -247,7 +286,7 @@ def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
     )
     return float(highs[fb_k]), c_time
 
-  else:
+  else:  # BEARISH
     for k in range(end_idx, start_idx, -1):
       is_trough = True
       if k > 0 and lows[k] > lows[k - 1]:
@@ -262,6 +301,7 @@ def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
         )
         return float(lows[k]), c_time
 
+    # Fallback to lowest low in lookback
     fb_k = int(np.argmin(lows[start_idx : end_idx + 1]) + start_idx)
     c_time = (
         df_5m.index[fb_k].strftime("%I:%M %p")
@@ -271,7 +311,15 @@ def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
     return float(lows[fb_k]), c_time
 
 
-def execute_spread(trade_type, spot, target_expiry, time_str, state, reason):
+def execute_spread(
+    trade_type,
+    spot,
+    target_expiry,
+    time_str,
+    state,
+    reason,
+    prev_close=None,
+):
   """Squares off existing opposing spread and opens a new 200-pt debit spread with paper trade logging."""
   atm_strike = int(round(spot / 50.0) * 50)
   state["previous_position_backup"] = state.get("active_position")
@@ -284,7 +332,9 @@ def execute_spread(trade_type, spot, target_expiry, time_str, state, reason):
         if "BULL" in old_pos["type"]
         else (old_pos["entry_spot"] - spot)
     )
-    rupee_pnl = points_captured * 0.22 * POSITION_QTY
+    rupee_pnl = (
+        points_captured * 0.22 * POSITION_QTY
+    )  # 200-pt spread delta ~0.22
     pnl_str = (
         f"+{points_captured:.2f} pts (~+₹{rupee_pnl:,.0f})"
         if points_captured > 0
@@ -394,8 +444,8 @@ def evaluate_and_notify():
         send_telegram(msg)
         print(f"[{current_time_str}] Dispatched Pre-Market Update.")
 
-  # Fetch Intraday 1H and 5M Market Data
-  df_1h, df_5m = fetch_market_data()
+  # Fetch Intraday 1H, 5M and Yesterday's Close Data
+  df_1h, df_5m, prev_close = fetch_market_data()
   if df_1h is None or df_5m is None:
     print(
         f"[{current_time_str}] Market data fetch empty or throttled. Will"
@@ -404,6 +454,8 @@ def evaluate_and_notify():
     return
 
   spot = float(df_5m["close"].iloc[-1])
+  diff_str = get_prev_close_diff_str(spot, prev_close)
+
   curr_1h = df_1h.iloc[-1]
   prev_1h = df_1h.iloc[-2]
 
@@ -437,8 +489,8 @@ def evaluate_and_notify():
   )
 
   print(
-      f"[{current_time_str}] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA:"
-      f" {e10:.2f} | Gap: {gap:.2f} pts | Inval Floor: {s_invalidation:.2f}"
+      f"[{current_time_str}] Spot: {spot:.2f} {diff_str} | 5 EMA: {e5:.2f} | 10"
+      f" EMA: {e10:.2f} | Gap: {gap:.2f} pts | Inval Floor: {s_invalidation:.2f}"
   )
 
   # ==========================================================
@@ -539,7 +591,7 @@ def evaluate_and_notify():
               f"🔄 *Restored Position:* `{reopened_type}` ({b_strike} /"
               f" {s_strike})\n"
               f"📅 *Target Expiry:* `{target_expiry}`\n"
-              f"📍 *Spot:* `{spot:.2f}`\n"
+              f"📍 *Current Spot:* `{spot:.2f}` {diff_str}\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
               f"🛡️ *Action:* Restored previous trend position to protect"
               " capital."
@@ -573,6 +625,7 @@ def evaluate_and_notify():
               current_time_str,
               state,
               reason="1H_CLOSE_CONFIRM",
+              prev_close=prev_close,
           )
 
           state["armed_direction"] = None
@@ -588,7 +641,7 @@ def evaluate_and_notify():
               f"📅 *Contract Expiry:* `{target_expiry}`\n"
               f"⏰ *Executed At:* `{current_time_str}` (1H Close:"
               f" `{closed_1h_time}`)\n"
-              f"📍 *Spot:* `{spot:.2f}`\n"
+              f"📍 *Entry Spot:* `{spot:.2f}` {diff_str}\n"
               f"📈 *Closed 5 EMA:* `{closed_ema5:.2f}` | *10 EMA:*"
               f" `{closed_ema10:.2f}`\n"
               f"📏 *Closed 1H Gap:* `{closed_gap:.2f} pts`\n"
@@ -626,6 +679,7 @@ def evaluate_and_notify():
             current_time_str,
             state,
             reason="0915_GAP_OPEN",
+            prev_close=prev_close,
         )
         state["pending_confirmation"] = {
             "candle_time": forming_1h_time,
@@ -641,7 +695,7 @@ def evaluate_and_notify():
             f"📦 *Position:* `{spread_name}`\n"
             f"📅 *Expiry:* `{target_expiry}`\n"
             f"⏰ *Time:* `{current_time_str}` (Market Open Bell)\n"
-            f"📍 *Open Spot:* `{spot:.2f}`\n"
+            f"📍 *Open Spot:* `{spot:.2f}` {diff_str}\n"
             f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
             f"🔒 *Floor Price:* `{s_invalidation:.2f}` (Buffer:"
             f" `{safety_buffer:.2f} pts`)\n"
@@ -670,7 +724,7 @@ def evaluate_and_notify():
         f"🎯 *1H BULLISH CROSSOVER DETECTED (ARMED)*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
-        f"📍 *Current Spot:* `{spot:.2f}`\n"
+        f"📍 *Current Spot:* `{spot:.2f}` {diff_str}\n"
         f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}` (Gap:"
         f" `{gap:.2f} pts`)\n"
         f"🔒 *Crossover Invalidation Floor:* `{s_invalidation:.2f}`\n"
@@ -700,7 +754,7 @@ def evaluate_and_notify():
         f"🎯 *1H BEARISH CROSSOVER DETECTED (ARMED)*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
-        f"📍 *Current Spot:* `{spot:.2f}`\n"
+        f"📍 *Current Spot:* `{spot:.2f}` {diff_str}\n"
         f"📉 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}` (Gap:"
         f" `{gap:.2f} pts`)\n"
         f"🔒 *Crossover Invalidation Floor:* `{s_invalidation:.2f}`\n"
@@ -739,6 +793,7 @@ def evaluate_and_notify():
             current_time_str,
             state,
             reason="DYNAMIC_PIVOT_LIVE_BREAKOUT",
+            prev_close=prev_close,
         )
 
         state["pending_confirmation"] = {
@@ -756,7 +811,7 @@ def evaluate_and_notify():
             f"📦 *Position:* `{spread_name}`\n"
             f"📅 *Expiry:* `{target_expiry}`\n"
             f"⏰ *Execution Time:* `{current_time_str}` (Live Tick Trigger)\n"
-            f"📍 *Entry Spot:* `{spot:.2f}`\n"
+            f"📍 *Entry Spot:* `{spot:.2f}` {diff_str}\n"
             f"🎯 *Breached First Swing Pivot:* `{pivot:.2f}`\n"
             f"🔒 *Floor Price:* `{s_invalidation:.2f}` (Buffer:"
             f" `{safety_buffer:.2f} pts`)\n"
@@ -781,7 +836,7 @@ def evaluate_and_notify():
           f"⚠️ *LIVE WARNING: 1H EMA GAP <= 5.0 PTS*\n"
           f"━━━━━━━━━━━━━━━━━━━━━\n"
           f"⏰ *Time:* `{now_ist.strftime('%I:%M %p IST')}`\n"
-          f"📍 *Spot:* `{spot:.2f}`\n"
+          f"📍 *Spot:* `{spot:.2f}` {diff_str}\n"
           f"📏 *Live Gap:* `{gap:.2f} pts`\n"
           f"🧭 *Current Alignment:* `{trend}`\n"
           f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -791,7 +846,7 @@ def evaluate_and_notify():
       send_telegram(msg)
 
   # ==========================================================
-  # 7. SCHEDULED 30-MINUTE STATUS UPDATES & EOD CAS (WINDOW: :14 to :24 & :44 to :54)
+  # 7. SCHEDULED 30-MINUTE STATUS UPDATES & EOD CAS
   # ==========================================================
   target_slot_type = None
   target_slot_id = None
@@ -833,7 +888,7 @@ def evaluate_and_notify():
         f"{title}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏰ *Time:* `{now_ist.strftime('%d-%b %I:%M %p IST')}`\n"
-        f"📍 *Nifty Spot:* `{spot:.2f}`\n"
+        f"📍 *Nifty Spot:* `{spot:.2f}` {diff_str}\n"
         f"📈 *Live 5 EMA:* `{e5:.2f}`\n"
         f"📉 *Live 10 EMA:* `{e10:.2f}`\n"
         f"📏 *EMA Gap:* `{gap:.2f} pts`\n"
@@ -847,19 +902,54 @@ def evaluate_and_notify():
 
 
 def run_live_loop():
-  """Continuous background loop that runs indefinitely, sleeping during off-hours
-
-  and actively executing every 60 seconds during market hours.
-  """
+  """Continuous background loop with instant startup confirmation ping,"""
   print("🚀 All-in-One Nifty Live Scanner & Paper Trader Initialized.")
+  now_ist = datetime.now(IST)
 
+  # 1. Instant Startup Verification Ping
+  try:
+    df_1h, df_5m, prev_close = fetch_market_data()
+    if df_5m is not None and not df_5m.empty:
+      spot = float(df_5m["close"].iloc[-1])
+      diff_str = get_prev_close_diff_str(spot, prev_close)
+      prev_1h = df_1h.iloc[-2]
+      prev_ema5 = float(prev_1h["ema_5"])
+      prev_ema10 = float(prev_1h["ema_10"])
+      k5, k10 = 2.0 / 6.0, 2.0 / 11.0
+      e5 = (spot * k5) + (prev_ema5 * (1.0 - k5))
+      e10 = (spot * k10) + (prev_ema10 * (1.0 - k10))
+      gap = abs(e5 - e10)
+      trend = (
+          "Bullish (5 EMA > 10 EMA)" if e5 > e10 else "Bearish (5 EMA < 10 EMA)"
+      )
+
+      startup_msg = (
+          f"🟢 *NIFTY SCANNER & PAPER TRADER ONLINE*\n"
+          f"━━━━━━━━━━━━━━━━━━━━━\n"
+          f"⏰ *Connected At:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
+          f"📍 *Current Spot:* `{spot:.2f}` {diff_str}\n"
+          f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
+          f"📏 *EMA Gap:* `{gap:.2f} pts`\n"
+          f"🧭 *Market Alignment:* `{trend}`\n"
+          f"━━━━━━━━━━━━━━━━━━━━━\n"
+          f"✅ *Status:* Engine connected & active on GitHub Actions."
+      )
+      send_telegram(startup_msg)
+      print(
+          f"[{now_ist.strftime('%I:%M:%S %p IST')}] Dispatched Startup Ping to"
+          " Telegram."
+      )
+  except Exception as e:
+    send_telegram_error("Startup Ping Failed", str(e))
+
+  # 2. Main Live Market Loop with Global Crash Protection
   while True:
     now_ist = datetime.now(IST)
     hour = now_ist.hour
     minute = now_ist.minute
     current_minutes = hour * 60 + minute
 
-    # 1. Weekend Handler (Saturday=5, Sunday=6)
+    # Weekend Handler (Saturday=5, Sunday=6)
     if now_ist.weekday() >= 5:
       print(
           f"😴 [{now_ist.strftime('%A, %I:%M %p IST')}] Weekend. Sleeping for 1"
@@ -868,7 +958,7 @@ def run_live_loop():
       sleep_time.sleep(3600)
       continue
 
-    # 2. Pre-market Early Morning (Before 09:05 AM IST)
+    # Pre-market Early Morning (Before 09:05 AM IST)
     if current_minutes < (9 * 60 + 5):
       sleep_sec = max(60, ((9 * 60 + 8) - current_minutes) * 60)
       print(
@@ -878,7 +968,7 @@ def run_live_loop():
       sleep_time.sleep(min(sleep_sec, 300))
       continue
 
-    # 3. Post-Market Evening (After 03:35 PM IST)
+    # Post-Market Evening (After 03:35 PM IST)
     if current_minutes > (15 * 60 + 35):
       print(
           f"😴 [{now_ist.strftime('%I:%M %p IST')}] Market Closed. Sleeping"
@@ -887,12 +977,13 @@ def run_live_loop():
       sleep_time.sleep(1800)
       continue
 
-    # 4. Active Live Market Session (09:05 AM - 03:35 PM IST)
+    # Active Live Market Session (09:05 AM - 03:35 PM IST)
     try:
       evaluate_and_notify()
     except Exception as e:
-      print(f"Execution cycle notice: {e}")
-      traceback.print_exc()
+      err_trace = traceback.format_exc()
+      print(f"Execution cycle error: {e}")
+      send_telegram_error("Live Strategy Evaluation Error", err_trace)
 
     sleep_time.sleep(SCAN_INTERVAL_SECONDS)
 
