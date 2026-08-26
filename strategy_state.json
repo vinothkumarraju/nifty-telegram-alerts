@@ -1,6 +1,7 @@
 {
   "armed_direction": null,
   "swing_pivot": null,
+  "pivot_candle_time": null,
   "armed_candle_time": "24-Aug 11:15 AM",
   "active_position": {
     "type": "BEAR_PUT_SPREAD",
@@ -14,5 +15,9 @@
   "previous_position_backup": null,
   "last_cross_state": "BEAR",
   "last_processed_5m_candle": "12:10 PM",
-  "last_verified_1h_candle": "24-Aug 12:15 PM"
+  "last_verified_1h_candle": "24-Aug 12:15 PM",
+  "last_tight_gap_ts": 1787738383.1084125,
+  "dispatched_slots": [
+    "2026-08-26_EOD_CAS"
+  ]
 }
