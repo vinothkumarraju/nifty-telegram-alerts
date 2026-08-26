@@ -216,18 +216,12 @@ def get_pre_market_status():
 
 
 def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
-  """Scans past 5-minute candles backward one by one to find the exact FIRST local swing peak/trough.
-
-  - BULLISH: Scans backwards to find first candle where High[k] >= High[k-1] and
-  High[k] >= High[k+1].
-  - BEARISH: Scans backwards to find first candle where Low[k] <= Low[k-1] and
-  Low[k] <= Low[k+1].
-  """
+  """Scans past 5-minute candles backward one by one to find the exact FIRST local swing peak/trough."""
   highs = df_5m["high"].values
   lows = df_5m["low"].values
   n = len(df_5m)
 
-  end_idx = n - 2  # Start from last completed 5m candle
+  end_idx = n - 2
   start_idx = max(1, end_idx - max_lookback)
 
   if direction == "BULLISH":
@@ -245,7 +239,6 @@ def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
         )
         return float(highs[k]), c_time
 
-    # Fallback to highest high in lookback
     fb_k = int(np.argmax(highs[start_idx : end_idx + 1]) + start_idx)
     c_time = (
         df_5m.index[fb_k].strftime("%I:%M %p")
@@ -254,7 +247,7 @@ def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
     )
     return float(highs[fb_k]), c_time
 
-  else:  # BEARISH
+  else:
     for k in range(end_idx, start_idx, -1):
       is_trough = True
       if k > 0 and lows[k] > lows[k - 1]:
@@ -269,7 +262,6 @@ def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
         )
         return float(lows[k]), c_time
 
-    # Fallback to lowest low in lookback
     fb_k = int(np.argmin(lows[start_idx : end_idx + 1]) + start_idx)
     c_time = (
         df_5m.index[fb_k].strftime("%I:%M %p")
@@ -292,9 +284,7 @@ def execute_spread(trade_type, spot, target_expiry, time_str, state, reason):
         if "BULL" in old_pos["type"]
         else (old_pos["entry_spot"] - spot)
     )
-    rupee_pnl = (
-        points_captured * 0.22 * POSITION_QTY
-    )  # 200-pt spread delta ~0.22
+    rupee_pnl = points_captured * 0.22 * POSITION_QTY
     pnl_str = (
         f"+{points_captured:.2f} pts (~+₹{rupee_pnl:,.0f})"
         if points_captured > 0
@@ -472,7 +462,6 @@ def evaluate_and_notify():
         )
 
         if confirmed:
-          # Crossover CONFIRMED on close -> Permanently lock position
           state["pending_confirmation"] = None
           state["previous_position_backup"] = None
           save_state(state)
@@ -491,7 +480,6 @@ def evaluate_and_notify():
           )
           send_telegram(msg)
         else:
-          # Crossover FAILED on close -> ROLLBACK to previous position
           failed_pos = state["active_position"]
           backup_pos = state["previous_position_backup"]
           pnl_loss = (
@@ -668,7 +656,6 @@ def evaluate_and_notify():
   # 4. 1H CROSSOVER DETECTION -> CANDLE-BY-CANDLE BACKWARD SCAN
   # ==========================================================
   if bull_cross and state["last_cross_state"] != "BULL":
-    # Dynamic backward scan to find the exact FIRST local swing peak
     first_swing_high, pivot_time = find_first_swing_pivot(
         df_5m, direction="BULLISH"
     )
@@ -699,7 +686,6 @@ def evaluate_and_notify():
     send_telegram(cross_msg)
 
   elif bear_cross and state["last_cross_state"] != "BEAR":
-    # Dynamic backward scan to find the exact FIRST local swing trough
     first_swing_low, pivot_time = find_first_swing_pivot(
         df_5m, direction="BEARISH"
     )
@@ -736,7 +722,6 @@ def evaluate_and_notify():
     direction = state["armed_direction"]
     pivot = float(state["swing_pivot"])
 
-    # Real-time intra-candle breakout condition
     is_bull_cross = (direction == "BULLISH") and (spot > pivot)
     is_bear_cross = (direction == "BEARISH") and (spot < pivot)
 
@@ -899,7 +884,7 @@ def run_live_loop():
           f"😴 [{now_ist.strftime('%I:%M %p IST')}] Market Closed. Sleeping"
           " until next morning..."
       )
-      sleep_time.sleep(1800)  # Sleep in 30-min increments
+      sleep_time.sleep(1800)
       continue
 
     # 4. Active Live Market Session (09:05 AM - 03:35 PM IST)
