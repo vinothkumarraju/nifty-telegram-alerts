@@ -4,12 +4,16 @@ on:
   schedule:
     # 03:35 AM UTC = 09:05 AM IST (Monday to Friday)
     - cron: '35 3 * * 1-5'
-  workflow_dispatch: # Allows manual one-click launch anytime
+  workflow_dispatch:
+
+# Explicitly grant write permissions to push trade logs back to the repo
+permissions:
+  contents: write
 
 jobs:
   run-trader:
     runs-on: ubuntu-latest
-    timeout-minutes: 390 # 6.5 hours full market duration
+    timeout-minutes: 390 # 6.5 hours (full market session)
 
     steps:
       - name: Checkout Repository
@@ -19,7 +23,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: Install Dependencies
         run: |
@@ -34,9 +37,9 @@ jobs:
           python nifty_trader.py
 
       - name: Commit State and Paper Trade Logs
-        if: always() # Runs even if market session ends or stops
+        if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add strategy_state.json paper_trades.csv
+          git add -A
           git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update strategy state & trade logs [skip ci]" && git push)
