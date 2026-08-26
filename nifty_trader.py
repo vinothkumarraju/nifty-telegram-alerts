@@ -1,17 +1,17 @@
-from datetime import datetime, timedelta, timezone
 import json
 import os
 import time as sleep_time
 import traceback
+from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
 
 # ==================== STRATEGY CONFIGURATION ====================
-BOT_TOKEN = (
-    str(os.getenv("BOT_TOKEN") or "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw").strip()
-)
+BOT_TOKEN = str(
+    os.getenv("BOT_TOKEN") or "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw"
+).strip()
 CHAT_ID = str(os.getenv("CHAT_ID") or "7972609109").strip()
 
 SCAN_INTERVAL_SECONDS = 60  # Fast 60-second live market checks
@@ -27,7 +27,11 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def get_target_expiry(dt_ist: datetime) -> str:
-  """Dynamically selects the active exchange expiry contract."""
+  """Dynamically selects the active exchange expiry contract.
+
+  - If Days to Expiry (DTE) <= 2 days -> Automatically selects next week's
+  contract.
+  """
   today = dt_ist.date()
   try:
     session = requests.Session()
@@ -56,6 +60,7 @@ def get_target_expiry(dt_ist: datetime) -> str:
   except Exception as e:
     print(f"Option chain fetch warning: {e}")
 
+  # Fallback to Tuesday contract schedule
   days_to_tuesday = (1 - today.weekday()) % 7
   nearest_tuesday = today + timedelta(days=days_to_tuesday)
   dte = (nearest_tuesday - today).days
@@ -66,6 +71,7 @@ def get_target_expiry(dt_ist: datetime) -> str:
 
 
 def load_state():
+  """Loads persistent state from JSON file across runner restarts."""
   default_state = {
       "armed_direction": None,
       "swing_pivot": None,
@@ -91,6 +97,7 @@ def load_state():
 
 
 def save_state(state):
+  """Saves persistent state to JSON file."""
   with open(STATE_FILE, "w") as f:
     json.dump(state, f, indent=2)
 
@@ -113,6 +120,7 @@ def send_telegram(text: str):
 
 
 def send_telegram_error(err_title: str, err_detail: str):
+  """Sends an instant red alert card to Telegram whenever an exception occurs."""
   now_ist = datetime.now(IST)
   msg = (
       f"🚨 *NIFTY BOT RUNTIME ERROR / EXCEPTION*\n"
@@ -127,6 +135,7 @@ def send_telegram_error(err_title: str, err_detail: str):
 
 
 def log_paper_trade(trade_data):
+  """Appends paper trade execution events into paper_trades.csv."""
   df = pd.DataFrame([trade_data])
   if not os.path.exists(TRADE_LOG_FILE):
     df.to_csv(TRADE_LOG_FILE, index=False)
@@ -135,6 +144,10 @@ def log_paper_trade(trade_data):
 
 
 def fetch_market_data():
+  """Fetches 1H, 5M, and daily close data with session headers.
+
+  Includes 3-attempt retry loop. Returns: df_1h, df_5m, prev_close
+  """
   session = requests.Session()
   session.headers.update({
       "User-Agent": (
@@ -177,6 +190,7 @@ def fetch_market_data():
 
 
 def get_prev_close_diff_str(spot: float, prev_close: float) -> str:
+  """Formats how many points Nifty is above (+) or below (-) yesterday's close."""
   if prev_close is None or prev_close <= 0:
     return ""
   diff = spot - prev_close
@@ -185,6 +199,7 @@ def get_prev_close_diff_str(spot: float, prev_close: float) -> str:
 
 
 def get_pre_market_status():
+  """Calculates pre-market expected opening gap using fast metadata and yesterday's close."""
   try:
     session = requests.Session()
     session.headers.update({
@@ -234,11 +249,12 @@ def get_pre_market_status():
 
 
 def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
+  """Scans past 5-minute candles backward one by one to find the exact FIRST local swing peak/trough."""
   highs = df_5m["high"].values
   lows = df_5m["low"].values
   n = len(df_5m)
 
-  end_idx = n - 2
+  end_idx = n - 2  # Start from last completed 5m candle
   start_idx = max(1, end_idx - max_lookback)
 
   if direction == "BULLISH":
@@ -297,10 +313,14 @@ def execute_spread(
     reason,
     prev_close=None,
 ):
-  atm_strike = int(round(spot / 50.0) * 50)
-  state["previous_position_backup"] = state.get("active_position")
+  """Squares off existing opposing spread (Leg 1) and opens a new 200-pt debit spread (Leg 2)
 
+  with full multi-leg paper trade logging and backup preservation for rollback
+  defense.
+  """
+  atm_strike = int(round(spot / 50.0) * 50)
   exit_msg_block = ""
+
   if state["active_position"] is not None:
     old_pos = state["active_position"]
     points_captured = (
@@ -308,15 +328,26 @@ def execute_spread(
         if "BULL" in old_pos["type"]
         else (old_pos["entry_spot"] - spot)
     )
-    rupee_pnl = points_captured * 0.22 * POSITION_QTY
+    rupee_pnl = (
+        points_captured * 0.22 * POSITION_QTY
+    )  # 200-pt spread delta ~0.22
     pnl_str = (
         f"+{points_captured:.2f} pts (~+₹{rupee_pnl:,.0f})"
         if points_captured > 0
         else f"{points_captured:.2f} pts (~-₹{abs(rupee_pnl):,.0f})"
     )
 
+    # Preserve exact Leg 1 state in backup memory for instant rollback restoration
+    state["previous_position_backup"] = {
+        **old_pos,
+        "exit_spot": spot,
+        "exit_time": time_str,
+        "captured_pnl_pts": round(points_captured, 2),
+        "captured_inr": round(rupee_pnl, 2),
+    }
+
     exit_msg_block = (
-        f"🔄 *SQUARED OFF PREVIOUS POSITION*\n"
+        f"🔄 *SQUARED OFF PREVIOUS POSITION (LEG 1)*\n"
         f"Type: `{old_pos['type']}` | Expiry: `{old_pos['expiry']}`\n"
         f"Strikes: `{old_pos['buy_strike']} / {old_pos['sell_strike']}`\n"
         f"Captured Spot PnL: `{pnl_str}`\n"
@@ -324,7 +355,7 @@ def execute_spread(
     )
     log_paper_trade({
         "timestamp": time_str,
-        "action": "CLOSE_FOR_NEW_ENTRY",
+        "action": "CLOSE_FOR_NEW_ENTRY_LEG1",
         "direction": old_pos["type"],
         "expiry": old_pos["expiry"],
         "spot": spot,
@@ -333,6 +364,8 @@ def execute_spread(
         "pnl_pts": round(points_captured, 2),
         "est_net_inr": round(rupee_pnl, 2),
     })
+  else:
+    state["previous_position_backup"] = None
 
   if "BULL" in trade_type:
     buy_strike = atm_strike
@@ -352,11 +385,17 @@ def execute_spread(
       "sell_strike": sell_strike,
       "entry_spot": spot,
       "entry_time": time_str,
+      "is_restored_leg3": False,
   }
 
+  action_tag = (
+      f"OPEN_{reason}_LEG2"
+      if "BREAKOUT" in reason or "GAP" in reason
+      else f"OPEN_{reason}"
+  )
   log_paper_trade({
       "timestamp": time_str,
-      "action": f"OPEN_{reason}",
+      "action": action_tag,
       "direction": trade_type,
       "expiry": target_expiry,
       "spot": spot,
@@ -370,6 +409,7 @@ def execute_spread(
 
 
 def evaluate_and_notify():
+  """Main strategy evaluator executed every 60 seconds with full 3-Leg rollback execution."""
   state = load_state()
   now_ist = datetime.now(IST)
   now_ts = sleep_time.time()
@@ -379,7 +419,9 @@ def evaluate_and_notify():
   minute = now_ist.minute
   target_expiry = get_target_expiry(now_ist)
 
-  # 1. Pre-Market Gap Card (09:08 to 09:14 AM IST)
+  # ==========================================================
+  # 1. PRE-MARKET GAP CARD (09:08 AM to 09:14 AM IST)
+  # ==========================================================
   if hour == 9 and (8 <= minute <= 14):
     slot_id = f"{date_str}_PRE_MARKET"
     if slot_id not in state["dispatched_slots"]:
@@ -432,6 +474,7 @@ def evaluate_and_notify():
   prev_ema5 = float(prev_1h["ema_5"])
   prev_ema10 = float(prev_1h["ema_10"])
 
+  # Live 1H EMA formula (Fast α=1/3, Slow α=2/11)
   k5, k10 = 2.0 / 6.0, 2.0 / 11.0
   e5 = (spot * k5) + (prev_ema5 * (1.0 - k5))
   e10 = (spot * k10) + (prev_ema10 * (1.0 - k10))
@@ -460,12 +503,15 @@ def evaluate_and_notify():
       f" EMA: {e10:.2f} | Gap: {gap:.2f} pts"
   )
 
-  # 2. 1H Candle Close Audit & Rollback
+  # ==========================================================
+  # 2. 1H CANDLE CLOSE AUDIT & 3-LEG ROLLBACK ENGINE
+  # ==========================================================
   if state.get("last_verified_1h_candle") != closed_1h_time:
     closed_ema5 = float(prev_1h["ema_5"])
     closed_ema10 = float(prev_1h["ema_10"])
     closed_gap = abs(closed_ema5 - closed_ema10)
 
+    # 2A. Audit Pending Breakout Trade on 1H Candle Close
     if state["pending_confirmation"] is not None:
       pending = state["pending_confirmation"]
       if pending["candle_time"] == closed_1h_time:
@@ -496,6 +542,7 @@ def evaluate_and_notify():
           )
           send_telegram(msg)
         else:
+          # Crossover FAILED -> Execute 3-Leg Physical Rollback Defense
           failed_pos = state["active_position"]
           backup_pos = state["previous_position_backup"]
           pnl_loss = (
@@ -505,9 +552,10 @@ def evaluate_and_notify():
           )
           rupee_loss = pnl_loss * 0.22 * POSITION_QTY
 
+          # Log Leg 2 (Trial Breakout) Close
           log_paper_trade({
               "timestamp": current_time_str,
-              "action": "CLOSE_INVALIDATED",
+              "action": "CLOSE_ROLLBACK_INVALIDATED_LEG2",
               "direction": failed_pos["type"],
               "expiry": failed_pos["expiry"],
               "spot": spot,
@@ -517,6 +565,7 @@ def evaluate_and_notify():
               "est_net_inr": round(rupee_loss, 2),
           })
 
+          # Re-open Leg 3 (Restored Parent Trend Spread)
           reopened_type = (
               backup_pos["type"]
               if backup_pos
@@ -530,6 +579,10 @@ def evaluate_and_notify():
               else atm_strike - SPREAD_WIDTH
           )
 
+          leg1_pnl_pts = (
+              backup_pos.get("captured_pnl_pts", 0.0) if backup_pos else 0.0
+          )
+
           state["active_position"] = {
               "type": reopened_type,
               "expiry": target_expiry,
@@ -537,6 +590,9 @@ def evaluate_and_notify():
               "sell_strike": s_strike,
               "entry_spot": spot,
               "entry_time": current_time_str,
+              "parent_leg1_pnl": leg1_pnl_pts,
+              "trial_leg2_pnl": round(pnl_loss, 2),
+              "is_restored_leg3": True,
           }
           state["pending_confirmation"] = None
           state["previous_position_backup"] = None
@@ -544,24 +600,42 @@ def evaluate_and_notify():
           state["swing_pivot"] = None
           save_state(state)
 
+          # Log Leg 3 Entry
+          log_paper_trade({
+              "timestamp": current_time_str,
+              "action": "OPEN_ROLLBACK_RESTORED_LEG3",
+              "direction": reopened_type,
+              "expiry": target_expiry,
+              "spot": spot,
+              "buy_strike": b_strike,
+              "sell_strike": s_strike,
+              "pnl_pts": "",
+              "est_net_inr": "",
+          })
+
           rollback_msg = (
-              f"🚨 *1H CROSSOVER FAILED ON CLOSE — ROLLBACK TRIGGERED*\n"
+              f"🚨 *1H CROSSOVER FAILED — 3-LEG ROLLBACK DEFENSE TRIGGERED*\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
-              f"⏰ *1H Candle Closed:* `{closed_1h_time}`\n"
+              f"⏰ *1H Candle Closed:* `{closed_1h_time}` | *Spot:* `{spot:.2f}`"
+              f" {diff_str}\n"
               f"⚠️ *Failure Reason:* 5 EMA failed to hold beyond 10 EMA at"
-              " candle close.\n"
-              f"❌ *Closed Failed Trade:* `{failed_pos['type']}` (Loss:"
-              f" `{pnl_loss:+.2f} pts`)\n"
-              f"🔄 *Restored Position:* `{reopened_type}` ({b_strike} /"
-              f" {s_strike})\n"
-              f"📅 *Target Expiry:* `{target_expiry}`\n"
-              f"📍 *Current Spot:* `{spot:.2f}` {diff_str}\n"
+              " candle close (False Wick Trapped).\n"
               f"━━━━━━━━━━━━━━━━━━━━━\n"
-              f"🛡️ *Action:* Restored previous trend position to protect"
-              " capital."
+              f"🛑 *LEG 1 (Parent Trend):*"
+              f" `{backup_pos['type'] if backup_pos else 'PREV_TREND'}` |"
+              f" Captured: `{leg1_pnl_pts:+.2f} pts`\n"
+              f"❌ *LEG 2 (Trial Breakout):* Exited `{failed_pos['type']}` |"
+              f" Loss: `{pnl_loss:+.2f} pts` (~₹{rupee_loss:,.0f})\n"
+              f"🔄 *LEG 3 (Restored Trend):* Re-opened `{reopened_type}`"
+              f" ({b_strike} / {s_strike}) @ `{spot:.2f}`\n"
+              f"📅 *Target Expiry:* `{target_expiry}`\n"
+              f"━━━━━━━━━━━━━━━━━━━━━\n"
+              f"🛡️ *Defense Strategy:* Cut trial breakout after 1H audit and"
+              " restored active higher-timeframe trend."
           )
           send_telegram(rollback_msg)
 
+    # 2B. Fallback Entry: 1H Candle Closed Confirmed with no earlier 5m breakout
     elif (
         state["armed_direction"] is not None
         and state["pending_confirmation"] is None
@@ -622,7 +696,9 @@ def evaluate_and_notify():
         state["swing_pivot"] = None
         save_state(state)
 
-  # 3. 09:15 AM Gap Open Execution
+  # ==========================================================
+  # 3. 09:15 AM INSTANT GAP OPEN EXECUTION (NO 5M WAIT)
+  # ==========================================================
   bull_cross = (e5 > e10) and (prev_ema5 <= prev_ema10)
   bear_cross = (e5 < e10) and (prev_ema5 >= prev_ema10)
 
@@ -667,7 +743,9 @@ def evaluate_and_notify():
         send_telegram(gap_open_msg)
         return
 
-  # 4. 1H Crossover Detection -> Dynamic Backward Scan
+  # ==========================================================
+  # 4. 1H CROSSOVER DETECTION -> DYNAMIC BACKWARD SCAN
+  # ==========================================================
   if df_5m is not None and not df_5m.empty:
     if bull_cross and state["last_cross_state"] != "BULL":
       first_swing_high, pivot_time = find_first_swing_pivot(
@@ -729,7 +807,9 @@ def evaluate_and_notify():
       )
       send_telegram(cross_msg)
 
-    # 5. Live Tick Breakout Trigger
+    # ==========================================================
+    # 5. REAL-TIME 5M PIVOT BREAKOUT EXECUTION (NO 5M WAIT)
+    # ==========================================================
     if state["armed_direction"] is not None and state["swing_pivot"] is not None:
       direction = state["armed_direction"]
       pivot = float(state["swing_pivot"])
@@ -785,7 +865,9 @@ def evaluate_and_notify():
           state["swing_pivot"] = None
           save_state(state)
 
-  # 6. Tight Gap Warning (<= 5.0 pts)
+  # ==========================================================
+  # 6. TIGHT GAP WARNING (<= 5.0 PTS) WITH 15-MIN COOLDOWN
+  # ==========================================================
   elif gap <= GAP_THRESHOLD:
     if (now_ts - state.get("last_tight_gap_ts", 0)) > 900:
       state["last_tight_gap_ts"] = now_ts
@@ -803,7 +885,9 @@ def evaluate_and_notify():
       )
       send_telegram(msg)
 
-  # 7. Scheduled Status Updates
+  # ==========================================================
+  # 7. SCHEDULED 30-MINUTE STATUS UPDATES & EOD CAS
+  # ==========================================================
   target_slot_type = None
   target_slot_id = None
 
