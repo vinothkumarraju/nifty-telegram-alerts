@@ -3,14 +3,26 @@
   "swing_pivot": null,
   "pivot_candle_time": null,
   "armed_candle_time": null,
-  "active_position": null,
+  "active_position": {
+    "type": "BEAR_PUT_SPREAD",
+    "expiry": "01-Sep-2026",
+    "buy_strike": 24150,
+    "sell_strike": 23950,
+    "entry_spot": 24133.05078125,
+    "entry_time": "03:15:05 PM IST",
+    "is_restored_leg3": false
+  },
   "pending_confirmation": null,
   "previous_position_backup": null,
-  "last_cross_state": null,
+  "last_cross_state": "BEAR",
   "last_processed_5m_candle": null,
   "last_verified_1h_candle": null,
   "last_tight_gap_ts": 0,
   "dispatched_slots": [
-    "2026-08-27_13_45"
+    "2026-08-27_13_45",
+    "2026-08-27_14_45",
+    "2026-08-27_15_30_EOD_CROSS_EXEC",
+    "2026-08-27_15_15",
+    "2026-08-27_EOD_CAS"
   ]
 }

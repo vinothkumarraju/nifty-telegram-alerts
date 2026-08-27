@@ -1,0 +1,2 @@
+timestamp,action,direction,expiry,spot,buy_strike,sell_strike,pnl_pts,est_net_inr
+03:15:05 PM IST,OPEN_1530_EOD_CLOSING_CROSSOVER,BEAR_PUT_SPREAD,01-Sep-2026,24133.05078125,24150,23950,,
