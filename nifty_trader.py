@@ -943,7 +943,6 @@ def evaluate_and_notify():
     state["dispatched_slots"].append(target_slot_id)
     save_state(state)
 
-    # Active Spread details for display
     active_pos = state.get("active_position")
     if active_pos:
       active_spread_info = (
@@ -1015,17 +1014,8 @@ def run_live_loop():
     df_1h, df_5m, prev_close = fetch_market_data()
     spot_info = ""
     trend_info = "Market Offline / Closed"
-    is_today_trading = False
 
     if df_1h is not None and not df_1h.empty:
-      latest_candle_time = df_1h.index[-1]
-      latest_candle_date = (
-          latest_candle_time.date()
-          if hasattr(latest_candle_time, "date")
-          else None
-      )
-      is_today_trading = latest_candle_date == now_ist.date()
-
       spot = (
           float(df_5m["close"].iloc[-1])
           if (df_5m is not None and not df_5m.empty)
@@ -1071,8 +1061,13 @@ def run_live_loop():
         f"🤖 *Bot Token & Chat ID:* `Verified & Operational`"
     )
     send_telegram(startup_msg)
+    print(
+        f"[{now_ist.strftime('%I:%M:%S %p IST')}] Dispatched Instant Startup"
+        " Ping to Telegram."
+    )
   except Exception as e:
     err_trace = traceback.format_exc()
+    print(f"Startup ping error: {e}")
     send_telegram_error("Startup Ping Failed", err_trace)
 
   # 2. Exit cleanly if triggered after market hours on non-trading days
@@ -1121,8 +1116,11 @@ def run_live_loop():
       evaluate_and_notify()
     except Exception as e:
       err_trace = traceback.format_exc()
+      print(f"Execution cycle error: {e}")
       send_telegram_error("Live Strategy Evaluation Error", err_trace)
 
     sleep_time.sleep(SCAN_INTERVAL_SECONDS)
-      if __name__ == "__main__":
+
+
+if __name__ == "__main__":
   run_live_loop()
