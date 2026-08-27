@@ -1,12 +1,11 @@
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import time as sleep_time
 import traceback
-from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 import requests
-import yfinance as yf
 
 # ==================== STRATEGY CONFIGURATION ====================
 BOT_TOKEN = str(
@@ -27,46 +26,12 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def get_target_expiry(dt_ist: datetime) -> str:
-  """Dynamically selects the active exchange expiry contract.
-
-  - If Days to Expiry (DTE) <= 2 days -> Automatically selects next week's
-  contract.
-  """
+  """Dynamically selects the active exchange expiry contract (Tuesday schedule)."""
   today = dt_ist.date()
-  try:
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    })
-    ticker = yf.Ticker("^NSEI", session=session)
-    available_expiries = ticker.options
-    if available_expiries:
-      valid_dates = [
-          datetime.strptime(exp, "%Y-%m-%d").date()
-          for exp in available_expiries
-          if datetime.strptime(exp, "%Y-%m-%d").date() >= today
-      ]
-      valid_dates.sort()
-      if valid_dates:
-        nearest = valid_dates[0]
-        dte = (nearest - today).days
-        target = (
-            valid_dates[1] if (dte <= 2 and len(valid_dates) > 1) else nearest
-        )
-        return target.strftime("%d-%b-%Y")
-  except Exception as e:
-    print(f"Option chain fetch warning: {e}")
-
-  # Fallback to Tuesday contract schedule
   days_to_tuesday = (1 - today.weekday()) % 7
   nearest_tuesday = today + timedelta(days=days_to_tuesday)
   dte = (nearest_tuesday - today).days
-  target = (
-      nearest_tuesday + timedelta(days=7) if dte <= 2 else nearest_tuesday
-  )
+  target = nearest_tuesday + timedelta(days=7) if dte <= 2 else nearest_tuesday
   return target.strftime("%d-%b-%Y")
 
 
@@ -143,50 +108,83 @@ def log_paper_trade(trade_data):
     df.to_csv(TRADE_LOG_FILE, mode="a", header=False, index=False)
 
 
-def fetch_market_data():
-  """Fetches 1H, 5M, and daily close data with session headers.
+def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="1h", range_str="5d"):
+  """Direct REST API fetch from Yahoo Finance Chart endpoints (Crumb-Free).
 
-  Includes 3-attempt retry loop. Returns: df_1h, df_5m, prev_close
+  Bypasses yfinance crumb rate limits (HTTP 429) on cloud servers.
   """
-  session = requests.Session()
-  session.headers.update({
+  endpoints = [
+      f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_str}&interval={interval}",
+      f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_str}&interval={interval}",
+  ]
+  headers = {
       "User-Agent": (
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      )
-  })
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+          " like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      ),
+      "Accept": "application/json",
+      "Accept-Language": "en-US,en;q=0.9",
+  }
 
-  for attempt in range(3):
+  for url in endpoints:
     try:
-      ticker = yf.Ticker("^NSEI", session=session)
-      df_1h = ticker.history(period="5d", interval="1h")
-      df_5m = ticker.history(period="5d", interval="5m")
-      df_daily = ticker.history(period="5d", interval="1d")
+      res = requests.get(url, headers=headers, timeout=8)
+      if res.status_code == 200:
+        data = res.json()
+        if (
+            "chart" in data
+            and "result" in data["chart"]
+            and data["chart"]["result"]
+        ):
+          result = data["chart"]["result"][0]
+          timestamps = result.get("timestamp", [])
+          quote = result.get("indicators", {}).get("quote", [{}])[0]
 
-      if df_1h is None or df_1h.empty:
-        sleep_time.sleep(2)
-        continue
+          if timestamps and quote:
+            df = pd.DataFrame({
+                "timestamp": [
+                    datetime.fromtimestamp(ts, tz=IST) for ts in timestamps
+                ],
+                "open": quote.get("open", []),
+                "high": quote.get("high", []),
+                "low": quote.get("low", []),
+                "close": quote.get("close", []),
+                "volume": quote.get("volume", []),
+            })
+            df = df.dropna(subset=["close"]).reset_index(drop=True)
+            if not df.empty:
+              df.set_index("timestamp", inplace=True)
+              return df
+    except Exception:
+      continue
+  return None
 
-      for df in [df_1h, df_5m]:
-        if df is not None and not df.empty:
-          df.columns = [col.lower() for col in df.columns]
 
-      df_1h["ema_5"] = df_1h["close"].ewm(span=5, adjust=False).mean()
-      df_1h["ema_10"] = df_1h["close"].ewm(span=10, adjust=False).mean()
+def fetch_market_data():
+  """Fetches 1H, 5M, and daily close data directly without crumb rate limits.
 
-      prev_close = None
-      if df_daily is not None and not df_daily.empty:
-        prev_close = (
-            float(df_daily["Close"].iloc[-2])
-            if len(df_daily) >= 2
-            else float(df_daily["Close"].iloc[-1])
-        )
+  Returns: df_1h, df_5m, prev_close
+  """
+  df_1h = fetch_yahoo_chart_direct("%5ENSEI", interval="1h", range_str="5d")
+  df_5m = fetch_yahoo_chart_direct("%5ENSEI", interval="5m", range_str="5d")
+  df_daily = fetch_yahoo_chart_direct("%5ENSEI", interval="1d", range_str="5d")
 
-      return df_1h, df_5m, prev_close
-    except Exception as e:
-      print(f"Data fetch attempt {attempt+1} notice: {e}")
-      sleep_time.sleep(2)
-  return None, None, None
+  if df_1h is None or df_1h.empty:
+    return None, None, None
+
+  # Calculate 1H EMAs
+  df_1h["ema_5"] = df_1h["close"].ewm(span=5, adjust=False).mean()
+  df_1h["ema_10"] = df_1h["close"].ewm(span=10, adjust=False).mean()
+
+  prev_close = None
+  if df_daily is not None and not df_daily.empty:
+    prev_close = (
+        float(df_daily["close"].iloc[-2])
+        if len(df_daily) >= 2
+        else float(df_daily["close"].iloc[-1])
+    )
+
+  return df_1h, df_5m, prev_close
 
 
 def get_prev_close_diff_str(spot: float, prev_close: float) -> str:
@@ -199,40 +197,26 @@ def get_prev_close_diff_str(spot: float, prev_close: float) -> str:
 
 
 def get_pre_market_status():
-  """Calculates pre-market expected opening gap using fast metadata and yesterday's close."""
+  """Calculates pre-market expected opening gap using direct daily chart endpoints."""
   try:
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    })
-    ticker = yf.Ticker("^NSEI", session=session)
-    daily_df = ticker.history(period="5d", interval="1d")
-    if daily_df is None or daily_df.empty:
+    df_daily = fetch_yahoo_chart_direct(
+        "%5ENSEI", interval="1d", range_str="5d"
+    )
+    df_1m = fetch_yahoo_chart_direct("%5ENSEI", interval="1m", range_str="1d")
+
+    if df_daily is None or df_daily.empty:
       return None
 
     prev_close = (
-        float(daily_df["Close"].iloc[-2])
-        if len(daily_df) >= 2
-        else float(daily_df["Close"].iloc[-1])
+        float(df_daily["close"].iloc[-2])
+        if len(df_daily) >= 2
+        else float(df_daily["close"].iloc[-1])
     )
-
-    live_spot = None
-    try:
-      fast_info = ticker.fast_info
-      if hasattr(fast_info, "last_price") and fast_info.last_price is not None:
-        live_spot = float(fast_info.last_price)
-    except Exception:
-      pass
-
-    if live_spot is None:
-      live_df = ticker.history(period="1d", interval="1m")
-      if live_df is not None and not live_df.empty:
-        live_spot = float(live_df["Close"].iloc[-1])
-      else:
-        live_spot = float(daily_df["Close"].iloc[-1])
+    live_spot = (
+        float(df_1m["close"].iloc[-1])
+        if (df_1m is not None and not df_1m.empty)
+        else float(df_daily["close"].iloc[-1])
+    )
 
     gap_pts = live_spot - prev_close
     gap_pct = (gap_pts / prev_close) * 100.0
@@ -337,7 +321,6 @@ def execute_spread(
         else f"{points_captured:.2f} pts (~-₹{abs(rupee_pnl):,.0f})"
     )
 
-    # Preserve exact Leg 1 state in backup memory for instant rollback restoration
     state["previous_position_backup"] = {
         **old_pos,
         "exit_spot": spot,
@@ -419,9 +402,7 @@ def evaluate_and_notify():
   minute = now_ist.minute
   target_expiry = get_target_expiry(now_ist)
 
-  # ==========================================================
-  # 1. PRE-MARKET GAP CARD (09:08 AM to 09:14 AM IST)
-  # ==========================================================
+  # 1. Pre-Market Gap Card (09:08 to 09:14 AM IST)
   if hour == 9 and (8 <= minute <= 14):
     slot_id = f"{date_str}_PRE_MARKET"
     if slot_id not in state["dispatched_slots"]:
@@ -569,7 +550,11 @@ def evaluate_and_notify():
           reopened_type = (
               backup_pos["type"]
               if backup_pos
-              else ("BEAR_PUT_SPREAD" if req_direction == "BULLISH" else "BULL_CALL_SPREAD")
+              else (
+                  "BEAR_PUT_SPREAD"
+                  if req_direction == "BULLISH"
+                  else "BULL_CALL_SPREAD"
+              )
           )
           atm_strike = int(round(spot / 50.0) * 50)
           b_strike = atm_strike
