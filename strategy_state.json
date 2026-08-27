@@ -1,0 +1,16 @@
+{
+  "armed_direction": null,
+  "swing_pivot": null,
+  "pivot_candle_time": null,
+  "armed_candle_time": null,
+  "active_position": null,
+  "pending_confirmation": null,
+  "previous_position_backup": null,
+  "last_cross_state": null,
+  "last_processed_5m_candle": null,
+  "last_verified_1h_candle": null,
+  "last_tight_gap_ts": 0,
+  "dispatched_slots": [
+    "2026-08-27_13_45"
+  ]
+}
