@@ -8,10 +8,8 @@ import pandas as pd
 import requests
 
 # ==================== STRATEGY CONFIGURATION ====================
-BOT_TOKEN = str(
-    os.getenv("BOT_TOKEN") or "8898904634:AAFMPluDTeuI_i6aI25xOdyBdYD-E2x9fsw"
-).strip()
-CHAT_ID = str(os.getenv("CHAT_ID") or "7972609109").strip()
+BOT_TOKEN = str(os.getenv("BOT_TOKEN") or "").strip()
+CHAT_ID = str(os.getenv("CHAT_ID") or "").strip()
 
 SCAN_INTERVAL_SECONDS = 60  # Fast 60-second live market checks
 SPREAD_WIDTH = 200  # 200-point ATM/OTM Debit Spread
