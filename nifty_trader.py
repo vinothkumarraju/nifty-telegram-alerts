@@ -729,9 +729,62 @@ def evaluate_and_notify():
         return
 
   # ==========================================================
-  # 4. 1H CROSSOVER DETECTION -> DYNAMIC BACKWARD SCAN
+  # 4. 03:15 PM - 03:30 PM EOD CLOSING CROSSOVER & BTST/STBT SPREAD EXECUTION
   # ==========================================================
-  if df_5m is not None and not df_5m.empty:
+  if hour == 15 and (15 <= minute <= 30):
+    required_eod_type = "BULL_CALL_SPREAD" if (e5 > e10) else "BEAR_PUT_SPREAD"
+    active_type = (
+        state.get("active_position", {}).get("type")
+        if state.get("active_position")
+        else None
+    )
+
+    if active_type != required_eod_type:
+      eod_slot = f"{date_str}_15_30_EOD_CROSS_EXEC"
+      if eod_slot not in state["dispatched_slots"]:
+        state["dispatched_slots"].append(eod_slot)
+        save_state(state)
+
+        exit_block, spread_name, b_strike, s_strike = execute_spread(
+            required_eod_type,
+            spot,
+            target_expiry,
+            current_time_str,
+            state,
+            reason="1530_EOD_CLOSING_CROSSOVER",
+            prev_close=prev_close,
+        )
+
+        state["armed_direction"] = None
+        state["swing_pivot"] = None
+        state["pending_confirmation"] = None
+        state["last_cross_state"] = "BULL" if e5 > e10 else "BEAR"
+        save_state(state)
+
+        eod_cross_msg = (
+            f"🎯 *03:15–03:30 PM EOD CROSSOVER EXECUTED & SPREAD ALERT*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{exit_block}"
+            f"📦 *Position:* `{spread_name}`\n"
+            f"📅 *Target Expiry:* `{target_expiry}`\n"
+            f"⏰ *Time:* `{current_time_str}` (EOD Market Closing Session)\n"
+            f"📍 *Closing Spot:* `{spot:.2f}` {diff_str}\n"
+            f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
+            f"📏 *EMA Gap:* `{gap:.2f} pts`\n"
+            f"🔒 *Floor Price:* `{s_invalidation:.2f}` (Buffer:"
+            f" `{safety_buffer:.2f} pts`)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🚀 *Action:* 1-Hour EMA crossover finalized during 03:15–03:30 PM"
+            " closing window. Opened 200-pt debit spread for overnight carry"
+            " (BTST/STBT)."
+        )
+        send_telegram(eod_cross_msg)
+        return
+
+  # ==========================================================
+  # 5. 1H CROSSOVER DETECTION -> DYNAMIC BACKWARD SCAN (INTRA-DAY)
+  # ==========================================================
+  if df_5m is not None and not df_5m.empty and hour < 15:
     if bull_cross and state["last_cross_state"] != "BULL":
       first_swing_high, pivot_time = find_first_swing_pivot(
           df_5m, direction="BULLISH"
@@ -793,7 +846,7 @@ def evaluate_and_notify():
       send_telegram(cross_msg)
 
     # ==========================================================
-    # 5. REAL-TIME 5M PIVOT BREAKOUT EXECUTION (NO 5M WAIT)
+    # 6. REAL-TIME 5M PIVOT BREAKOUT EXECUTION (NO 5M WAIT)
     # ==========================================================
     if state["armed_direction"] is not None and state["swing_pivot"] is not None:
       direction = state["armed_direction"]
@@ -851,9 +904,9 @@ def evaluate_and_notify():
           save_state(state)
 
   # ==========================================================
-  # 6. TIGHT GAP WARNING (<= 5.0 PTS) WITH 15-MIN COOLDOWN
+  # 7. TIGHT GAP WARNING (<= 5.0 PTS) WITH 15-MIN COOLDOWN
   # ==========================================================
-  elif gap <= GAP_THRESHOLD:
+  elif gap <= GAP_THRESHOLD and hour < 15:
     if (now_ts - state.get("last_tight_gap_ts", 0)) > 900:
       state["last_tight_gap_ts"] = now_ts
       save_state(state)
@@ -871,15 +924,15 @@ def evaluate_and_notify():
       send_telegram(msg)
 
   # ==========================================================
-  # 7. SCHEDULED 30-MINUTE STATUS UPDATES & EOD CAS
+  # 8. SCHEDULED 30-MINUTE STATUS UPDATES & EOD CAS FINAL CARD
   # ==========================================================
   target_slot_type = None
   target_slot_id = None
 
-  if 14 <= minute <= 24:
+  if 15 <= minute <= 20:
     target_slot_id = f"{date_str}_{hour:02d}_15"
     target_slot_type = "30MIN_STATUS"
-  elif (44 <= minute <= 54) and (hour < 15):
+  elif (45 <= minute <= 50) and (hour < 15):
     target_slot_id = f"{date_str}_{hour:02d}_45"
     target_slot_type = "30MIN_STATUS"
   elif hour == 15 and (30 <= minute <= 35):
@@ -890,13 +943,39 @@ def evaluate_and_notify():
     state["dispatched_slots"].append(target_slot_id)
     save_state(state)
 
+    # Active Spread details for display
+    active_pos = state.get("active_position")
+    if active_pos:
+      active_spread_info = (
+          f"📦 *Active Position:* `{active_pos['type']}`\n"
+          f"🎯 *Strikes:* `{active_pos['buy_strike']} /"
+          f" {active_pos['sell_strike']}`\n"
+          f"📅 *Expiry:* `{active_pos['expiry']}`"
+      )
+    else:
+      atm_strk = int(round(spot / 50.0) * 50)
+      rec_spread = (
+          f"BULL CALL DEBIT SPREAD ({atm_strk} CE / {atm_strk + 200} CE)"
+          if (e5 > e10)
+          else f"BEAR PUT DEBIT SPREAD ({atm_strk} PE / {atm_strk - 200} PE)"
+      )
+      active_spread_info = (
+          "📦 *Active Position:* `None (Flat)`\n"
+          f"👉 *Recommended Spread:* `{rec_spread}`"
+      )
+
     if target_slot_type == "EOD_CAS":
-      title = "📊 *NIFTY 1H: EOD POST-CAS FINAL UPDATE*"
-      status_line = "✅ *Status:* Market Closed & CAS Finalized."
-    elif hour == 9 and minute <= 24:
+      title = (
+          "📊 *NIFTY 1H: EOD POST-CAS FINAL & OVERNIGHT SPREAD REPORT*"
+      )
+      status_line = (
+          "✅ *Status:* Market Closed (3:30 PM) & CAS Settled.\n"
+          f"{active_spread_info}"
+      )
+    elif hour == 9 and minute <= 20:
       title = "📊 *NIFTY 1H: MARKET OPEN STATUS (09:15 AM)*"
       status_line = "🚀 *Status:* Regular Session Active."
-    elif 14 <= minute <= 24:
+    elif 15 <= minute <= 20:
       title = (
           f"📊 *NIFTY 1H: HOURLY CANDLE CLOSE UPDATE"
           f" ({now_ist.strftime('%I:15 %p')})*"
@@ -919,7 +998,7 @@ def evaluate_and_notify():
         f"📏 *EMA Gap:* `{gap:.2f} pts`\n"
         f"🔒 *Floor Price:* `{s_invalidation:.2f}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🧭 *Trend:* `{trend}`\n"
+        f"🧭 *Trend Alignment:* `{trend}`\n"
         f"{status_line}"
     )
     send_telegram(msg)
