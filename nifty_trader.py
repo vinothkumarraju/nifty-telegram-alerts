@@ -107,7 +107,7 @@ def log_paper_trade(trade_data):
     df.to_csv(TRADE_LOG_FILE, mode="a", header=False, index=False)
 
 
-def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="1h", range_str="5d"):
+def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="1h", range_str="60d"):
   endpoints = [
       f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_str}&interval={interval}",
       f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_str}&interval={interval}",
@@ -120,7 +120,7 @@ def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="1h", range_str="5d"):
 
   for url in endpoints:
     try:
-      res = requests.get(url, headers=headers, timeout=8)
+      res = requests.get(url, headers=headers, timeout=10)
       if res.status_code == 200:
         data = res.json()
         if (
@@ -153,9 +153,10 @@ def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="1h", range_str="5d"):
 
 
 def fetch_market_data():
-  df_1h = fetch_yahoo_chart_direct("%5ENSEI", interval="1h", range_str="5d")
+  # Fetches 60 days of 1H data to ensure accurate EMA warmup convergence
+  df_1h = fetch_yahoo_chart_direct("%5ENSEI", interval="1h", range_str="60d")
   df_5m = fetch_yahoo_chart_direct("%5ENSEI", interval="5m", range_str="5d")
-  df_daily = fetch_yahoo_chart_direct("%5ENSEI", interval="1d", range_str="5d")
+  df_daily = fetch_yahoo_chart_direct("%5ENSEI", interval="1d", range_str="10d")
 
   if df_1h is None or df_1h.empty:
     return None, None, None
@@ -417,7 +418,7 @@ def evaluate_and_notify():
   )
   diff_str = get_prev_close_diff_str(spot, prev_close)
 
-  # 🔍 ACCURATE LIVE EMA RE-CALCULATION (Matches chart platform dynamically)
+  # Full-depth dynamic EMA recalculation
   df_1h.loc[df_1h.index[-1], "close"] = spot
   df_1h["ema_5"] = df_1h["close"].ewm(span=5, adjust=False).mean()
   df_1h["ema_10"] = df_1h["close"].ewm(span=10, adjust=False).mean()
