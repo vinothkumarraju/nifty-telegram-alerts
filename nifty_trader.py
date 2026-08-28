@@ -431,7 +431,6 @@ def evaluate_and_notify():
   e10 = (spot * k10) + (prev_ema10 * (1.0 - k10))
   gap = abs(e5 - e10)
 
-  # 🔍 EMA VERIFICATION CHECK PRINT (Visible in your local terminal)
   print(f"[{current_time_str}] [EMA CHECK] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA: {e10:.2f} | Gap: {gap:.2f} pts")
 
   s_invalidation = (27.0 * prev_ema10 - 22.0 * prev_ema5) / 5.0
@@ -636,19 +635,59 @@ def evaluate_and_notify():
 
 def run_live_loop():
   print("🚀 Nifty Live Scanner & Paper Trader Initialized.")
-  # Added back startup connection ping
+  
+  # RESTORED: Exact startup connection ping card formatted precisely as requested
   try:
+    df_1h, df_5m, prev_close = fetch_market_data()
+    spot_info = ""
+    trend_info = "Market Offline / Closed"
+
+    if df_1h is not None and not df_1h.empty:
+      spot = (
+          float(df_5m["close"].iloc[-1])
+          if (df_5m is not None and not df_5m.empty)
+          else float(df_1h["close"].iloc[-1])
+      )
+      diff_str = get_prev_close_diff_str(spot, prev_close)
+      spot_info = f"📍 *Latest Spot:* `{spot:.2f}` {diff_str}\n"
+
+      if len(df_1h) >= 2:
+        prev_1h = df_1h.iloc[-2]
+        prev_ema5 = float(prev_1h["ema_5"])
+        prev_ema10 = float(prev_1h["ema_10"])
+        k5, k10 = 2.0 / 6.0, 2.0 / 11.0
+        e5 = (spot * k5) + (prev_ema5 * (1.0 - k5))
+        e10 = (spot * k10) + (prev_ema10 * (1.0 - k10))
+        gap = abs(e5 - e10)
+        trend = (
+            "Bullish (5 EMA > 10 EMA)"
+            if e5 > e10
+            else "Bearish (5 EMA < 10 EMA)"
+        )
+        trend_info = (
+            f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}` (Gap:"
+            f" `{gap:.2f}` pts)\n🧭 *Trend:* `{trend}`"
+        )
+    else:
+      spot_info = "📍 *Spot Data:* `Awaiting Live Market Tick`\n"
+
     now_ist = datetime.now(IST)
     startup_msg = (
         f"🟢 *NIFTY BOT CONNECTED & ONLINE*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏰ *Time:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
-        f"⚙️ *Runner Status:* `Manual Local Terminal Execution Active`\n"
+        f"{spot_info}"
+        f"{trend_info}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚙️ *Runner Status:* `⚪ Post-Market / Manual Test Run`\n"
         f"🤖 *Bot Token & Chat ID:* `Verified & Operational`"
     )
     send_telegram(startup_msg)
+    print(f"[{now_ist.strftime('%I:%M:%S %p IST')}] Dispatched Instant Startup Ping to Telegram.")
   except Exception as e:
-    print(f"Startup ping notice: {e}")
+    err_trace = traceback.format_exc()
+    print(f"Startup ping error: {e}")
+    send_telegram_error("Startup Ping Failed", err_trace)
 
   evaluate_and_notify()
 
