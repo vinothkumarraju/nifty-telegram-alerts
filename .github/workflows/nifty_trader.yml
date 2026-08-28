@@ -7,6 +7,12 @@ on:
     - cron: '30 3 * * 1-5'
   workflow_dispatch:
 
+# Prevents two instances of the bot from running at the same time
+# If you manually run the bot while one is already running, it cancels the old one safely.
+concurrency: 
+  group: nifty-trading-bot
+  cancel-in-progress: true
+
 # Explicitly grant write permissions to push trade logs back to the repo
 permissions:
   contents: write
@@ -56,3 +62,8 @@ jobs:
           git pull --rebase origin main || true
           git add -A
           git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update strategy state & trade logs [skip ci]" && git push origin main)
+
+      # FIX FOR TODAY'S BUG: Prevents GitHub from ever pausing your 09:00 AM auto-start
+      - name: Prevent GitHub from suspending cron jobs
+        uses: gautamkrishnar/keepalive-workflow@v2
+        if: always()
