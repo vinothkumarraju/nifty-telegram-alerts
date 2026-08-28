@@ -15,7 +15,7 @@ SCAN_INTERVAL_SECONDS = 60  # Fast 60-second live market checks
 SPREAD_WIDTH = 200  # 200-point ATM/OTM Debit Spread
 GAP_THRESHOLD = 5.0  # EMA Gap compression alert threshold (5.0 pts)
 POSITION_QTY = 650  # Position quantity (10 lots @ 65 qty for ₹10L Capital)
-MAX_TRIAL_LOSS_PTS = 45.0  # Absolute maximum points you are willing to risk on a false breakout
+MAX_TRIAL_LOSS_PTS = 45.0  # Absolute maximum points to risk on false breakout
 STATE_FILE = "strategy_state.json"
 TRADE_LOG_FILE = "paper_trades.csv"
 
@@ -107,7 +107,7 @@ def log_paper_trade(trade_data):
     df.to_csv(TRADE_LOG_FILE, mode="a", header=False, index=False)
 
 
-def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="1h", range_str="60d"):
+def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="5m", range_str="60d"):
   endpoints = [
       f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_str}&interval={interval}",
       f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_str}&interval={interval}",
@@ -153,13 +153,21 @@ def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="1h", range_str="60d"):
 
 
 def fetch_market_data():
-  # Fetches 60 days of 1H data to ensure accurate EMA warmup convergence
-  df_1h = fetch_yahoo_chart_direct("%5ENSEI", interval="1h", range_str="60d")
-  df_5m = fetch_yahoo_chart_direct("%5ENSEI", interval="5m", range_str="5d")
+  """Fetches 5m data and resamples cleanly into true 09:15-anchored 1H candles."""
+  df_5m = fetch_yahoo_chart_direct("%5ENSEI", interval="5m", range_str="60d")
   df_daily = fetch_yahoo_chart_direct("%5ENSEI", interval="1d", range_str="10d")
 
-  if df_1h is None or df_1h.empty:
+  if df_5m is None or df_5m.empty:
     return None, None, None
+
+  # Resample 5m bars to 1H candles anchored to 09:15 AM market open
+  df_1h = df_5m.resample("1h", offset="15min").agg({
+      "open": "first",
+      "high": "max",
+      "low": "min",
+      "close": "last",
+      "volume": "sum",
+  }).dropna(subset=["close"])
 
   prev_close = None
   if df_daily is not None and not df_daily.empty:
@@ -418,7 +426,7 @@ def evaluate_and_notify():
   )
   diff_str = get_prev_close_diff_str(spot, prev_close)
 
-  # Full-depth dynamic EMA recalculation
+  # Update latest resampled 1H bar with live spot & calculate EMAs
   df_1h.loc[df_1h.index[-1], "close"] = spot
   df_1h["ema_5"] = df_1h["close"].ewm(span=5, adjust=False).mean()
   df_1h["ema_10"] = df_1h["close"].ewm(span=10, adjust=False).mean()
@@ -427,7 +435,7 @@ def evaluate_and_notify():
   e10 = float(df_1h["ema_10"].iloc[-1])
   gap = abs(e5 - e10)
 
-  print(f"[{current_time_str}] [EXACT EMA CHECK] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA: {e10:.2f} | Gap: {gap:.2f} pts")
+  print(f"[{current_time_str}] [EXACT EMA] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA: {e10:.2f} | Gap: {gap:.2f} pts")
 
   curr_1h = df_1h.iloc[-1]
   prev_1h = df_1h.iloc[-2]
