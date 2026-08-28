@@ -15,6 +15,7 @@ SCAN_INTERVAL_SECONDS = 60  # Fast 60-second live market checks
 SPREAD_WIDTH = 200  # 200-point ATM/OTM Debit Spread
 GAP_THRESHOLD = 5.0  # EMA Gap compression alert threshold (5.0 pts)
 POSITION_QTY = 650  # Position quantity (10 lots @ 65 qty for ₹10L Capital)
+MAX_TRIAL_LOSS_PTS = 45.0  # Absolute maximum points you are willing to risk on a false breakout
 STATE_FILE = "strategy_state.json"
 TRADE_LOG_FILE = "paper_trades.csv"
 
@@ -483,6 +484,98 @@ def evaluate_and_notify():
   )
 
   # ==========================================================
+  # 1.5 COMBINED EMERGENCY CIRCUIT BREAKER (MATH FLOOR + HARD CAP)
+  # ==========================================================
+  if state.get("pending_confirmation") is not None and state.get("active_position") is not None:
+      trial_pos = state["active_position"]
+      backup_pos = state.get("previous_position_backup")
+      
+      is_bull_trial = "BULL" in trial_pos["type"]
+      entry_spot = trial_pos["entry_spot"]
+      
+      # Calculate live open PnL of the trial breakout
+      live_pnl = (spot - entry_spot) if is_bull_trial else (entry_spot - spot)
+      
+      # 🛡️ SHIELD 1: The Catastrophe Hard Cap (e.g., -45 points)
+      hard_stop_hit = live_pnl <= -MAX_TRIAL_LOSS_PTS
+      
+      # 🛡️ SHIELD 2: The Mathematical EMA Floor/Ceiling Breach
+      ema_floor_hit = (spot <= s_invalidation) if is_bull_trial else (spot >= s_invalidation)
+      
+      if hard_stop_hit or ema_floor_hit:
+          rupee_loss = live_pnl * 0.22 * POSITION_QTY
+          trigger_reason = "HARD CAP HIT" if hard_stop_hit else "EMA FLOOR BREACH"
+          
+          # 1. Log Leg 2 (Trial Breakout) Emergency Close
+          log_paper_trade({
+              "timestamp": current_time_str,
+              "action": f"CLOSE_EMERGENCY_{'HARD' if hard_stop_hit else 'MATH'}_LEG2",
+              "direction": trial_pos["type"],
+              "expiry": trial_pos["expiry"],
+              "spot": spot,
+              "buy_strike": trial_pos["buy_strike"],
+              "sell_strike": trial_pos["sell_strike"],
+              "pnl_pts": round(live_pnl, 2),
+              "est_net_inr": round(rupee_loss, 2),
+          })
+
+          # 2. Determine what the original parent trend was
+          reopened_type = (
+              backup_pos["type"]
+              if backup_pos
+              else ("BEAR_PUT_SPREAD" if is_bull_trial else "BULL_CALL_SPREAD")
+          )
+          atm_strike = int(round(spot / 50.0) * 50)
+          b_strike = atm_strike
+          s_strike = atm_strike + SPREAD_WIDTH if "BULL" in reopened_type else atm_strike - SPREAD_WIDTH
+          
+          leg1_pnl_pts = backup_pos.get("captured_pnl_pts", 0.0) if backup_pos else 0.0
+
+          # 3. Re-open the parent trend (Leg 3) instantly
+          state["active_position"] = {
+              "type": reopened_type,
+              "expiry": target_expiry,
+              "buy_strike": b_strike,
+              "sell_strike": s_strike,
+              "entry_spot": spot,
+              "entry_time": current_time_str,
+              "parent_leg1_pnl": leg1_pnl_pts,
+              "trial_leg2_pnl": round(live_pnl, 2),
+              "is_restored_leg3": True,
+          }
+          state["pending_confirmation"] = None
+          state["previous_position_backup"] = None
+          state["armed_direction"] = None
+          state["swing_pivot"] = None
+          save_state(state)
+
+          # 4. Log Leg 3 Entry
+          log_paper_trade({
+              "timestamp": current_time_str,
+              "action": "OPEN_EMERGENCY_RESTORED_LEG3",
+              "direction": reopened_type,
+              "expiry": target_expiry,
+              "spot": spot,
+              "buy_strike": b_strike,
+              "sell_strike": s_strike,
+              "pnl_pts": "",
+              "est_net_inr": "",
+          })
+
+          emergency_msg = (
+              f"🛑 *EMERGENCY STOP: FALSE BREAKOUT KILLED*\n"
+              f"━━━━━━━━━━━━━━━━━━━━━\n"
+              f"⏰ *Time:* `{current_time_str}`\n"
+              f"⚠️ *Trigger:* `{trigger_reason}`\n"
+              f"❌ *Closed Trial Leg:* `{trial_pos['type']}` at `{spot:.2f}` ({live_pnl:.2f} pts | ~₹{abs(rupee_loss):,.0f})\n"
+              f"🔄 *Restored Trend:* Re-opened `{reopened_type}` at `{spot:.2f}`\n"
+              f"━━━━━━━━━━━━━━━━━━━━━\n"
+              f"🛡️ *Action:* Cut false breakout intraday. Did not wait for 1-Hour close."
+          )
+          send_telegram(emergency_msg)
+          return
+
+  # ==========================================================
   # 2. 1H CANDLE CLOSE AUDIT & 3-LEG ROLLBACK ENGINE
   # ==========================================================
   if state.get("last_verified_1h_candle") != closed_1h_time:
@@ -730,18 +823,23 @@ def evaluate_and_notify():
   # 4. 03:15 PM - 03:30 PM EOD CLOSING CROSSOVER & BTST/STBT SPREAD EXECUTION
   # ==========================================================
   if hour == 15 and (15 <= minute <= 30):
-    required_eod_type = "BULL_CALL_SPREAD" if (e5 > e10) else "BEAR_PUT_SPREAD"
+    # Verify if an actual crossover happened between the previous closed 1H bar and live
+    is_fresh_bull_cross = (e5 > e10) and (prev_ema5 <= prev_ema10)
+    is_fresh_bear_cross = (e5 < e10) and (prev_ema5 >= prev_ema10)
+    
     active_type = (
         state.get("active_position", {}).get("type")
         if state.get("active_position")
         else None
     )
 
-    if active_type != required_eod_type:
+    if (is_fresh_bull_cross and active_type != "BULL_CALL_SPREAD") or (is_fresh_bear_cross and active_type != "BEAR_PUT_SPREAD"):
       eod_slot = f"{date_str}_15_30_EOD_CROSS_EXEC"
       if eod_slot not in state["dispatched_slots"]:
         state["dispatched_slots"].append(eod_slot)
         save_state(state)
+        
+        required_eod_type = "BULL_CALL_SPREAD" if is_fresh_bull_cross else "BEAR_PUT_SPREAD"
 
         exit_block, spread_name, b_strike, s_strike = execute_spread(
             required_eod_type,
@@ -756,7 +854,7 @@ def evaluate_and_notify():
         state["armed_direction"] = None
         state["swing_pivot"] = None
         state["pending_confirmation"] = None
-        state["last_cross_state"] = "BULL" if e5 > e10 else "BEAR"
+        state["last_cross_state"] = "BULL" if is_fresh_bull_cross else "BEAR"
         save_state(state)
 
         eod_cross_msg = (
