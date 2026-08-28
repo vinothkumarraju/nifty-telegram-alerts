@@ -496,7 +496,7 @@ def evaluate_and_notify():
       # Calculate live open PnL of the trial breakout
       live_pnl = (spot - entry_spot) if is_bull_trial else (entry_spot - spot)
       
-      # 🛡️ SHIELD 1: The Catastrophe Hard Cap (e.g., -45 points)
+      # 🛡️ SHIELD 1: The Catastrophe Hard Cap (-45 points)
       hard_stop_hit = live_pnl <= -MAX_TRIAL_LOSS_PTS
       
       # 🛡️ SHIELD 2: The Mathematical EMA Floor/Ceiling Breach
@@ -1202,7 +1202,7 @@ def run_live_loop():
               f"━━━━━━━━━━━━━━━━━━━━━\n"
               f"⏰ *Time:* `{loop_ist.strftime('%d-%b %I:%M %p IST')}`\n"
               f"ℹ️ *Status:* No live ticks registered for today by 09:30 AM.\n"
-              f"💤 *Action:* Bot is entering sleep mode to save server minutes."
+              f"💤 *Action:* Duty cycle ended for today."
           )
           send_telegram(holiday_msg)
           print("Exchange holiday detected. Shutting down runner cleanly.")
