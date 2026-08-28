@@ -3,30 +3,20 @@ name: Nifty Live Scanner & Paper Trader
 on:
   schedule:
     # 03:30 AM UTC = 09:00 AM IST (Monday to Friday)
-    # Starts 15 mins before market open to eliminate GitHub Actions queue delays
     - cron: '30 3 * * 1-5'
   workflow_dispatch:
 
-# Prevents two instances of the bot from running at the same time
-# If you manually run the bot while one is already running, it cancels the old one safely.
-concurrency: 
-  group: nifty-trading-bot
-  cancel-in-progress: true
-
-# Explicitly grant write permissions to push trade logs back to the repo
 permissions:
   contents: write
 
 jobs:
   run-trader:
     runs-on: ubuntu-latest
-    timeout-minutes: 420 # 7 hours (09:00 AM to 04:00 PM IST)
+    timeout-minutes: 420
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GH_PAT }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -45,29 +35,11 @@ jobs:
         run: |
           python nifty_trader.py
 
-      - name: Send GitHub Runner Failure Alert to Telegram
-        if: failure()
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${CHAT_ID}" \
-            -d "parse_mode=Markdown" \
-            -d "text=🚨 *GITHUB ACTIONS RUNNER CRASHED / FAILED*%0A━━━━━━━━━━━━━━━━━━━━━%0A⏰ *Time:* $(date -u)%0A⚠️ *Job:* \`Nifty Live Scanner & Paper Trader\`%0A📋 *Status:* Runner exited with non-zero status before 03:35 PM IST.%0A👉 *Action Required:* Check Actions tab on GitHub and restart manually."
-
       - name: Commit State and Paper Trade Logs
         if: always()
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin main || true
           git add -A
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update strategy state & trade logs [skip ci]" && git push https://${GH_PAT}@github.com/${{ github.repository }}.git HEAD:main)
-
-      # FIX FOR TODAY'S BUG: Prevents GitHub from ever pausing your 09:00 AM auto-start
-      - name: Prevent GitHub from suspending cron jobs
-        uses: gautamkrishnar/keepalive-workflow@v2
-        if: always()
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update strategy state & trade logs [skip ci]" && git push origin main)
