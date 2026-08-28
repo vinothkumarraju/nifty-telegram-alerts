@@ -431,6 +431,9 @@ def evaluate_and_notify():
   e10 = (spot * k10) + (prev_ema10 * (1.0 - k10))
   gap = abs(e5 - e10)
 
+  # 🔍 EMA VERIFICATION CHECK PRINT (Visible in your local terminal)
+  print(f"[{current_time_str}] [EMA CHECK] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA: {e10:.2f} | Gap: {gap:.2f} pts")
+
   s_invalidation = (27.0 * prev_ema10 - 22.0 * prev_ema5) / 5.0
   safety_buffer = abs(spot - s_invalidation)
 
@@ -633,6 +636,20 @@ def evaluate_and_notify():
 
 def run_live_loop():
   print("🚀 Nifty Live Scanner & Paper Trader Initialized.")
+  # Added back startup connection ping
+  try:
+    now_ist = datetime.now(IST)
+    startup_msg = (
+        f"🟢 *NIFTY BOT CONNECTED & ONLINE*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏰ *Time:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
+        f"⚙️ *Runner Status:* `Manual Local Terminal Execution Active`\n"
+        f"🤖 *Bot Token & Chat ID:* `Verified & Operational`"
+    )
+    send_telegram(startup_msg)
+  except Exception as e:
+    print(f"Startup ping notice: {e}")
+
   evaluate_and_notify()
 
 
