@@ -58,12 +58,15 @@ jobs:
 
       - name: Commit State and Paper Trade Logs
         if: always()
+        env:
+          # Injects your Personal Access Token directly into the runner environment
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin main || true
           git add -A
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update strategy state & trade logs [skip ci]" && git push origin main)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update strategy state & trade logs [skip ci]" && git push https://${GH_PAT}@github.com/${{ github.repository }}.git HEAD:main)
 
       # FIX FOR TODAY'S BUG: Prevents GitHub from ever pausing your 09:00 AM auto-start
       - name: Prevent GitHub from suspending cron jobs
