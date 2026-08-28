@@ -59,7 +59,6 @@ jobs:
       - name: Commit State and Paper Trade Logs
         if: always()
         env:
-          # Injects your Personal Access Token directly into the runner environment
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           git config --global user.name "github-actions[bot]"
