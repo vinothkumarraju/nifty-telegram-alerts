@@ -2,8 +2,16 @@ name: Nifty Live Strategy Runner
 
 on:
   schedule:
-    # 06:05 PM IST (12:35 UTC) & 06:10 PM IST (12:40 UTC)
-    - cron: '35,40 12 * * *'
+    # 09:00 AM IST -> Startup Check (03:30 UTC)
+    - cron: '30 3 * * 1-5'
+    # 09:10 AM IST -> Pre-Market Gap Alert (03:40 UTC)
+    - cron: '40 3 * * 1-5'
+    # 09:15 AM IST -> Market Open Gap Fill (03:45 UTC)
+    - cron: '45 3 * * 1-5'
+    # Every 30 Minutes (:15 & :45) from 09:45 AM to 03:15 PM IST (04:15 to 09:45 UTC)
+    - cron: '15,45 4-9 * * 1-5'
+    # 03:25 PM IST -> EOD Crossover Check (09:55 UTC)
+    - cron: '55 9 * * 1-5'
   workflow_dispatch:
 
 permissions:
