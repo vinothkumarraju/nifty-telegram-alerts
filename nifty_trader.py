@@ -1,6 +1,3 @@
-cd ~/Desktop/nifty_backtest
-
-cat << 'EOF' > nifty_trader.py
 from datetime import datetime, timedelta, timezone
 import json
 import os
