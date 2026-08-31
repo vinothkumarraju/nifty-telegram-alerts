@@ -785,25 +785,31 @@ def is_market_active_window(now_ist: datetime) -> bool:
 
 
 def run_live_loop():
-    """Continuous 60-second live runner loop with 03:40 PM pause & 09:00 AM auto-resume."""
-    print("🚀 Nifty Live Scanner & Paper Trader Initialized.")
-    now_ist = datetime.now(IST)
-
-    startup_msg = (
-        f"🟢 *NIFTY BOT RUNNER ONLINE & ACTIVE*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏰ *Started:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
-        f"⏱️ *Scan Frequency:* `Every 60 seconds (09:00 AM – 03:40 PM IST)`\n"
-        f"⚙️ *Engine Mode:* `5M Close Breakout + 1H Close Confirmation`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 Bot is actively scanning live market."
-    )
-    send_telegram(startup_msg)
+    """Continuous runner with auto-standby outside market hours and active 09:00 AM start."""
+    print("🚀 Nifty Live Scanner Initialized.")
 
     while True:
         now_ist = datetime.now(IST)
 
         if is_market_active_window(now_ist):
+            # Send session start greeting only once when morning starts
+            today_str = now_ist.strftime("%Y-%m-%d")
+            start_slot = f"{today_str}_SESSION_ACTIVE_START"
+            state = load_state()
+            if start_slot not in state.get("dispatched_slots", []):
+                state["dispatched_slots"].append(start_slot)
+                save_state(state)
+                startup_msg = (
+                    f"🟢 *NIFTY BOT RUNNER ONLINE & ACTIVE*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"⏰ *Session Time:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
+                    f"⏱️ *Scan Frequency:* `Every 60 seconds (09:00 AM – 03:40 PM IST)`\n"
+                    f"⚙️ *Engine Mode:* `5M Close Breakout + 1H Close Confirmation`\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🤖 Bot is now actively scanning live market."
+                )
+                send_telegram(startup_msg)
+
             try:
                 evaluate_and_notify()
             except Exception as e:
@@ -813,16 +819,26 @@ def run_live_loop():
 
             sleep_time.sleep(SCAN_INTERVAL_SECONDS)
         else:
-            # Outside active market hours (After 03:40 PM or before 09:00 AM or weekends)
+            # Outside active market hours
             sleep_secs, target_dt = get_seconds_until_next_market_open(now_ist)
             hours_left = sleep_secs / 3600.0
             wake_time_str = target_dt.strftime("%A, %d-%b %I:%M %p IST")
-            print(f"[{now_ist.strftime('%I:%M:%S %p IST')}] ⏸️ Market closed (Session ended at 03:40 PM).")
-            print(f"Sleeping for {hours_left:.2f} hours until next market open: {wake_time_str}...")
 
-            # Sleep until 09:00 AM next trading day
+            standby_msg = (
+                f"⏸️ *NIFTY BOT ON STANDBY (MARKET CLOSED)*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏰ *Time:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
+                f"💤 *Status:* Outside active hours (09:00 AM – 03:40 PM IST).\n"
+                f"⏳ *Sleeping for:* `{hours_left:.1f} hours`\n"
+                f"🌅 *Next Market Session:* `{wake_time_str}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🛡️ Scanner is pausing network requests until 09:00 AM."
+            )
+            send_telegram(standby_msg)
+
+            print(f"[{now_ist.strftime('%I:%M:%S %p IST')}] ⏸️ Market closed. Sleeping for {hours_left:.2f}h until {wake_time_str}...")
             sleep_time.sleep(sleep_secs)
-            print(f"[{datetime.now(IST).strftime('%I:%M:%S %p IST')}] 🌅 Waking up for 09:00 AM market session!")
+            print(f"[{datetime.now(IST).strftime('%I:%M:%S %p IST')}] 🌅 Waking up for 09:00 AM market open!")
 
 
 if __name__ == "__main__":
