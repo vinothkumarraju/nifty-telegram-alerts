@@ -2,9 +2,17 @@ name: Nifty Live Strategy Runner
 
 on:
   schedule:
-    # Runs every 5 minutes during Indian Market Hours (09:05 AM to 03:35 PM IST / Mon-Fri 03:35 to 10:05 UTC)
-    - cron: '*/5 3-10 * * 1-5'
-  workflow_dispatch: # Allows manual execution from the GitHub Actions tab
+    # 09:00 AM IST -> Morning Startup Readiness Check
+    - cron: '30 3 * * 1-5'
+    # 09:10 AM IST -> Pre-Market Gap Analysis Alert
+    - cron: '40 3 * * 1-5'
+    # 09:15 AM IST -> Market Open Instant Gap Momentum Fill
+    - cron: '45 3 * * 1-5'
+    # Every :15 and :45 minutes from 09:45 AM to 03:15 PM IST (04:15 to 09:45 UTC)
+    - cron: '15,45 4-9 * * 1-5'
+    # 03:25 PM IST -> EOD Crossover Confirmation Check (BTST/STBT)
+    - cron: '55 9 * * 1-5'
+  workflow_dispatch: # Allows manual trigger anytime from GitHub UI
 
 permissions:
   contents: write
@@ -28,18 +36,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy requests
 
-      - name: Execute Live Strategy Engine
+      - name: Execute Strategy Single-Pass
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           python nifty_trader.py
 
-      - name: Commit and Push State Updates
+      - name: Commit & Push State Updates
         if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add strategy_state.json paper_trades.csv || true
-          git commit -m "Auto-update strategy state & trade logs [skip ci]" || echo "No state changes to commit"
+          git commit -m "Auto-update strategy state & logs [skip ci]" || echo "No changes to commit"
           git push || true
