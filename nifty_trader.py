@@ -412,7 +412,7 @@ def evaluate_and_notify():
                 )
                 send_telegram(msg)
 
-    # Fetch live market data
+    # Fetch live data
     df_1h, df_5m, prev_close = fetch_market_data()
     if df_1h is None or df_1h.empty or df_5m is None or df_5m.empty:
         return
