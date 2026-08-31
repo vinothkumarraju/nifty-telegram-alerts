@@ -15,7 +15,7 @@ CHAT_ID = str(os.getenv("CHAT_ID") or "").strip()
 SCAN_INTERVAL_SECONDS = 60  # Fast 60-second live market check
 SPREAD_WIDTH = 200          # 200-point ATM/OTM Debit Spread
 MIN_EMA_GAP = 2.5           # Minimum EMA separation to arm crossover
-GAP_THRESHOLD = 5.0         # EMA Gap compression alert threshold (5.0 pts)
+GAP_THRESHOLD = 5.0         # EMA Gap compression alert threshold (< 5.0 pts)
 POSITION_QTY = 650          # Position quantity (10 lots @ 65 qty for ₹10L Capital)
 STATE_FILE = "strategy_state.json"
 TRADE_LOG_FILE = "paper_trades.csv"
@@ -95,7 +95,7 @@ def send_telegram_error(err_title: str, err_detail: str):
         f"⚠️ *Issue:* `{err_title}`\n"
         f"📋 *Traceback:* `{str(err_detail)[:250]}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔄 *Status:* Attempting auto-recovery in 60 seconds."
+        f"🔄 *Status:* Auto-recovering on next 60s tick."
     )
     send_telegram(msg)
 
@@ -223,7 +223,7 @@ def get_pre_market_status():
 
 
 def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
-    """Refined backward-scanning fractal peak/trough detector."""
+    """Backward-scanning fractal peak/trough detector."""
     highs = df_5m["high"].values
     lows = df_5m["low"].values
     times = df_5m.index
@@ -614,7 +614,7 @@ def evaluate_and_notify():
     # ==========================================================
     # 6. 15:30 PM POST-CAS CLOSING TREND & SETTLEMENT ALERT
     # ==========================================================
-    if hour == 15 and (30 <= minute <= 35):
+    if hour == 15 and (30 <= minute <= 40):
         cas_slot = f"{date_str}_1530_POST_CAS"
         if cas_slot not in state["dispatched_slots"]:
             state["dispatched_slots"].append(cas_slot)
@@ -637,7 +637,7 @@ def evaluate_and_notify():
                 f"🧭 *EOD Closing Trend:* {final_trend}\n"
                 f"📦 *Carried Position:* {pos_info}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🌙 *Status:* Closing Auction complete. Ready for next session open."
+                f"🌙 *Status:* Closing Auction complete. Pausing scanner until 09:00 AM next session."
             )
             send_telegram(cas_msg)
             return
@@ -760,30 +760,69 @@ def evaluate_and_notify():
                 send_telegram(status_card)
 
 
+def get_seconds_until_next_market_open(now_ist: datetime) -> int:
+    """Calculates seconds until next trading day 09:00 AM IST (skipping weekends)."""
+    target = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
+    if now_ist >= target:
+        target += timedelta(days=1)
+    while target.weekday() >= 5:  # 5=Sat, 6=Sun
+        target += timedelta(days=1)
+    return int((target - now_ist).total_seconds()), target
+
+
+def is_market_active_window(now_ist: datetime) -> bool:
+    """Active live scanning window: Mon-Fri between 09:00 AM and 03:40 PM IST."""
+    if now_ist.weekday() >= 5:  # Saturday or Sunday
+        return False
+    hour, minute = now_ist.hour, now_ist.minute
+    if hour < 9:
+        return False
+    if hour == 15 and minute > 40:
+        return False
+    if hour > 15:
+        return False
+    return True
+
+
 def run_live_loop():
-    """Continuous 60-second live runner loop."""
-    print("🚀 Nifty Live Scanner & Paper Trader Initialized (60s checks).")
+    """Continuous 60-second live runner loop with 03:40 PM pause & 09:00 AM auto-resume."""
+    print("🚀 Nifty Live Scanner & Paper Trader Initialized.")
     now_ist = datetime.now(IST)
+
     startup_msg = (
         f"🟢 *NIFTY BOT RUNNER ONLINE & ACTIVE*\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⏰ *Started:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
-        f"⏱️ *Scan Frequency:* `Every 60 seconds`\n"
-        f"⚙️ *Engine Mode:* `5M Candle Close Breakout + 1H Confirmation`\n"
+        f"⏱️ *Scan Frequency:* `Every 60 seconds (09:00 AM – 03:40 PM IST)`\n"
+        f"⚙️ *Engine Mode:* `5M Close Breakout + 1H Close Confirmation`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 Bot is now actively scanning live market."
+        f"🤖 Bot is actively scanning live market."
     )
     send_telegram(startup_msg)
 
     while True:
-        try:
-            evaluate_and_notify()
-        except Exception as e:
-            err_trace = traceback.format_exc()
-            print(f"Loop runtime error: {e}")
-            send_telegram_error("Scanner Loop Exception", err_trace)
+        now_ist = datetime.now(IST)
 
-        sleep_time.sleep(SCAN_INTERVAL_SECONDS)
+        if is_market_active_window(now_ist):
+            try:
+                evaluate_and_notify()
+            except Exception as e:
+                err_trace = traceback.format_exc()
+                print(f"Loop runtime error: {e}")
+                send_telegram_error("Scanner Loop Exception", err_trace)
+
+            sleep_time.sleep(SCAN_INTERVAL_SECONDS)
+        else:
+            # Outside active market hours (After 03:40 PM or before 09:00 AM or weekends)
+            sleep_secs, target_dt = get_seconds_until_next_market_open(now_ist)
+            hours_left = sleep_secs / 3600.0
+            wake_time_str = target_dt.strftime("%A, %d-%b %I:%M %p IST")
+            print(f"[{now_ist.strftime('%I:%M:%S %p IST')}] ⏸️ Market closed (Session ended at 03:40 PM).")
+            print(f"Sleeping for {hours_left:.2f} hours until next market open: {wake_time_str}...")
+
+            # Sleep until 09:00 AM next trading day
+            sleep_time.sleep(sleep_secs)
+            print(f"[{datetime.now(IST).strftime('%I:%M:%S %p IST')}] 🌅 Waking up for 09:00 AM market session!")
 
 
 if __name__ == "__main__":
