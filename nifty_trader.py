@@ -2,7 +2,6 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import sys
-import time as sleep_time
 import traceback
 import numpy as np
 import pandas as pd
@@ -12,11 +11,10 @@ import requests
 BOT_TOKEN = str(os.getenv("BOT_TOKEN") or "").strip()
 CHAT_ID = str(os.getenv("CHAT_ID") or "").strip()
 
-SCAN_INTERVAL_SECONDS = 60  # Fast 60-second live market check
-SPREAD_WIDTH = 200          # 200-point ATM/OTM Debit Spread
-MIN_EMA_GAP = 2.5           # Minimum EMA separation to arm crossover
+SPREAD_WIDTH = 200          # 200-point ATM/OTM Debit Spread[cite: 1]
+MIN_EMA_GAP = 2.5           # Minimum EMA separation to arm crossover[cite: 1]
 GAP_THRESHOLD = 5.0         # EMA Gap compression alert threshold (< 5.0 pts)
-POSITION_QTY = 650          # Position quantity (10 lots @ 65 qty for ₹10L Capital)
+POSITION_QTY = 650          # Position quantity (10 lots @ 65 qty for ₹10L Capital)[cite: 1]
 STATE_FILE = "strategy_state.json"
 TRADE_LOG_FILE = "paper_trades.csv"
 
@@ -26,7 +24,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def get_target_expiry(dt_ist: datetime) -> str:
-    """Dynamically selects the active exchange expiry contract (Tuesday schedule)."""
+    """Dynamically selects active exchange expiry contract (Tuesday schedule)."""
     today = dt_ist.date()
     days_to_tuesday = (1 - today.weekday()) % 7
     nearest_tuesday = today + timedelta(days=days_to_tuesday)
@@ -36,7 +34,7 @@ def get_target_expiry(dt_ist: datetime) -> str:
 
 
 def load_state():
-    """Loads persistent state from JSON file across runner restarts."""
+    """Loads persistent state across GitHub Actions workflow runs."""
     default_state = {
         "armed_direction": None,
         "swing_pivot": None,
@@ -63,30 +61,29 @@ def load_state():
 
 
 def save_state(state):
-    """Saves persistent state to JSON file."""
+    """Saves persistent state to repository file."""
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
 
 
 def send_telegram(text: str):
-    """Sends formatted Markdown alert cards to Telegram."""
+    """Sends Markdown alert cards to Telegram."""
     if not BOT_TOKEN or "YOUR_BOT_TOKEN" in BOT_TOKEN:
-        print(f"[Telegram Local Output]:\n{text}\n")
+        print(f"[Telegram Console Output]:\n{text}\n")
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
         res = requests.post(url, json=payload, timeout=10)
-        if res.status_code != 200:
-            print(f"Telegram API warning ({res.status_code}): {res.text}")
+        if res.status_code == 200:
+            print("Telegram alert dispatched successfully.")
         else:
-            print("Telegram message dispatched successfully.")
+            print(f"Telegram API warning ({res.status_code}): {res.text}")
     except Exception as e:
         print(f"Telegram dispatch error: {e}")
 
 
 def send_telegram_error(err_title: str, err_detail: str):
-    """Sends an instant red alert card to Telegram whenever an exception occurs."""
     now_ist = datetime.now(IST)
     msg = (
         f"🚨 *NIFTY BOT RUNTIME ERROR / EXCEPTION*\n"
@@ -95,13 +92,12 @@ def send_telegram_error(err_title: str, err_detail: str):
         f"⚠️ *Issue:* `{err_title}`\n"
         f"📋 *Traceback:* `{str(err_detail)[:250]}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔄 *Status:* Auto-recovering on next 60s tick."
+        f"🔄 *Runner:* Automatic retry on next scheduled cron."
     )
     send_telegram(msg)
 
 
 def log_paper_trade(trade_data):
-    """Appends paper trade execution events into paper_trades.csv."""
     df = pd.DataFrame([trade_data])
     if not os.path.exists(TRADE_LOG_FILE):
         df.to_csv(TRADE_LOG_FILE, index=False)
@@ -125,11 +121,7 @@ def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="5m", range_str="60d"):
             res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
                 data = res.json()
-                if (
-                    "chart" in data
-                    and "result" in data["chart"]
-                    and data["chart"]["result"]
-                ):
+                if "chart" in data and "result" in data["chart"] and data["chart"]["result"]:
                     result = data["chart"]["result"][0]
                     timestamps = result.get("timestamp", [])
                     quote = result.get("indicators", {}).get("quote", [{}])[0]
@@ -155,7 +147,7 @@ def fetch_yahoo_chart_direct(symbol="%5ENSEI", interval="5m", range_str="60d"):
 
 
 def fetch_market_data():
-    """Fetches 5m data and resamples cleanly into true 09:15-anchored 1H candles."""
+    """Fetches 5m data and resamples into true 09:15-anchored 1H candles."""
     df_5m = fetch_yahoo_chart_direct("%5ENSEI", interval="5m", range_str="60d")
     df_daily = fetch_yahoo_chart_direct("%5ENSEI", interval="1d", range_str="10d")
 
@@ -218,46 +210,45 @@ def get_pre_market_status():
             "gap_pct": gap_pct,
         }
     except Exception as e:
-        print(f"Pre-market fetch notice: {e}")
+        print(f"Pre-market notice: {e}")
         return None
 
 
-def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):
-    """Backward-scanning fractal peak/trough detector."""
-    highs = df_5m["high"].values
-    lows = df_5m["low"].values
+def find_first_swing_pivot(df_5m, direction="BULLISH", max_lookback=30):[cite: 1]
+    highs = df_5m["high"].values[cite: 1]
+    lows = df_5m["low"].values[cite: 1]
     times = df_5m.index
-    n = len(df_5m)
+    n = len(df_5m)[cite: 1]
 
-    if n < 3:
+    if n < 3:[cite: 1]
         t_str = times[-1].strftime("%I:%M %p") if hasattr(times[-1], "strftime") else str(times[-1])
-        return (float(highs[-1]) if direction == "BULLISH" else float(lows[-1])), t_str
+        return (float(highs[-1]) if direction == "BULLISH" else float(lows[-1])), t_str[cite: 1]
 
-    end_idx = n - 2
-    start_idx = max(1, end_idx - max_lookback)
+    end_idx = n - 2[cite: 1]
+    start_idx = max(1, end_idx - max_lookback)[cite: 1]
 
-    if direction == "BULLISH":
-        for k in range(end_idx, start_idx, -1):
-            if (k > 0 and highs[k] >= highs[k - 1]) and (k < n - 1 and highs[k] >= highs[k + 1]):
+    if direction == "BULLISH":[cite: 1]
+        for k in range(end_idx, start_idx, -1):[cite: 1]
+            if (k > 0 and highs[k] >= highs[k - 1]) and (k < n - 1 and highs[k] >= highs[k + 1]):[cite: 1]
                 t_str = times[k].strftime("%I:%M %p") if hasattr(times[k], "strftime") else str(times[k])
-                return float(highs[k]), t_str
-        for k in range(end_idx, start_idx, -1):
-            if k > 0 and highs[k] >= highs[k - 1]:
+                return float(highs[k]), t_str[cite: 1]
+        for k in range(end_idx, start_idx, -1):[cite: 1]
+            if k > 0 and highs[k] >= highs[k - 1]:[cite: 1]
                 t_str = times[k].strftime("%I:%M %p") if hasattr(times[k], "strftime") else str(times[k])
-                return float(highs[k]), t_str
+                return float(highs[k]), t_str[cite: 1]
         t_str = times[end_idx].strftime("%I:%M %p") if hasattr(times[end_idx], "strftime") else str(times[end_idx])
-        return float(highs[end_idx]), t_str
+        return float(highs[end_idx]), t_str[cite: 1]
     else:
-        for k in range(end_idx, start_idx, -1):
-            if (k > 0 and lows[k] <= lows[k - 1]) and (k < n - 1 and lows[k] <= lows[k + 1]):
+        for k in range(end_idx, start_idx, -1):[cite: 1]
+            if (k > 0 and lows[k] <= lows[k - 1]) and (k < n - 1 and lows[k] <= lows[k + 1]):[cite: 1]
                 t_str = times[k].strftime("%I:%M %p") if hasattr(times[k], "strftime") else str(times[k])
-                return float(lows[k]), t_str
-        for k in range(end_idx, start_idx, -1):
-            if k > 0 and lows[k] <= lows[k - 1]:
+                return float(lows[k]), t_str[cite: 1]
+        for k in range(end_idx, start_idx, -1):[cite: 1]
+            if k > 0 and lows[k] <= lows[k - 1]:[cite: 1]
                 t_str = times[k].strftime("%I:%M %p") if hasattr(times[k], "strftime") else str(times[k])
-                return float(lows[k]), t_str
+                return float(lows[k]), t_str[cite: 1]
         t_str = times[end_idx].strftime("%I:%M %p") if hasattr(times[end_idx], "strftime") else str(times[end_idx])
-        return float(lows[end_idx]), t_str
+        return float(lows[end_idx]), t_str[cite: 1]
 
 
 def execute_spread(
@@ -278,15 +269,15 @@ def execute_spread(
             (spot - old_pos["entry_spot"])
             if "BULL" in old_pos["type"]
             else (old_pos["entry_spot"] - spot)
-        )
-        rupee_pnl = points_captured * 0.22 * POSITION_QTY
+        )[cite: 1]
+        rupee_pnl = points_captured * 0.22 * POSITION_QTY[cite: 1]
         pnl_str = (
             f"+{points_captured:.2f} pts (~+₹{rupee_pnl:,.0f})"
             if points_captured > 0
             else f"{points_captured:.2f} pts (~-₹{abs(rupee_pnl):,.0f})"
         )
 
-        state["previous_position_backup"] = {
+        state["previous_position_backup"] = {[cite: 1]
             **old_pos,
             "exit_spot": spot,
             "exit_time": time_str,
@@ -303,35 +294,35 @@ def execute_spread(
         )
         log_paper_trade({
             "timestamp": time_str,
-            "action": "CLOSE_FOR_NEW_ENTRY_LEG1",
+            "action": "CLOSE_FOR_NEW_ENTRY_LEG1",[cite: 1]
             "direction": old_pos["type"],
             "expiry": old_pos["expiry"],
             "spot": spot,
             "buy_strike": old_pos["buy_strike"],
             "sell_strike": old_pos["sell_strike"],
-            "pnl_pts": round(points_captured, 2),
-            "est_net_inr": round(rupee_pnl, 2),
+            "pnl_pts": round(points_captured, 2),[cite: 1]
+            "est_net_inr": round(rupee_pnl, 2),[cite: 1]
         })
     else:
-        state["previous_position_backup"] = None
+        state["previous_position_backup"] = None[cite: 1]
 
-    if "BULL" in trade_type:
+    if "BULL" in trade_type:[cite: 1]
         buy_strike = atm_strike
-        sell_strike = atm_strike + SPREAD_WIDTH
+        sell_strike = atm_strike + SPREAD_WIDTH[cite: 1]
         spread_name = f"BULL CALL DEBIT SPREAD ({buy_strike} CE / {sell_strike} CE)"
     else:
         buy_strike = atm_strike
-        sell_strike = atm_strike - SPREAD_WIDTH
+        sell_strike = atm_strike - SPREAD_WIDTH[cite: 1]
         spread_name = f"BEAR PUT DEBIT SPREAD ({buy_strike} PE / {sell_strike} PE)"
 
-    state["active_position"] = {
+    state["active_position"] = {[cite: 1]
         "type": trade_type,
         "expiry": target_expiry,
         "buy_strike": buy_strike,
         "sell_strike": sell_strike,
         "entry_spot": spot,
         "entry_time": time_str,
-        "is_restored_leg3": False,
+        "is_restored_leg3": False,[cite: 1]
     }
 
     action_tag = (
@@ -415,37 +406,37 @@ def evaluate_and_notify():
     # Fetch live data
     df_1h, df_5m, prev_close = fetch_market_data()
     if df_1h is None or df_1h.empty or df_5m is None or df_5m.empty:
+        print("Market data not ready or market offline. Terminating cleanly.")
         return
 
-    spot = float(df_5m["close"].iloc[-1])
+    spot = float(df_5m["close"].iloc[-1])[cite: 1]
     diff_str = get_prev_close_diff_str(spot, prev_close)
 
-    # Calculate 1H EMAs
     df_1h_calc = df_1h.copy()
-    df_1h_calc.loc[df_1h_calc.index[-1], "close"] = spot
-    df_1h_calc["ema_5"] = df_1h_calc["close"].ewm(span=5, adjust=False).mean()
-    df_1h_calc["ema_10"] = df_1h_calc["close"].ewm(span=10, adjust=False).mean()
+    df_1h_calc.loc[df_1h_calc.index[-1], "close"] = spot[cite: 1]
+    df_1h_calc["ema_5"] = df_1h_calc["close"].ewm(span=5, adjust=False).mean()[cite: 1]
+    df_1h_calc["ema_10"] = df_1h_calc["close"].ewm(span=10, adjust=False).mean()[cite: 1]
 
-    e5 = float(df_1h_calc["ema_5"].iloc[-1])
-    e10 = float(df_1h_calc["ema_10"].iloc[-1])
-    live_gap = abs(e5 - e10)
+    e5 = float(df_1h_calc["ema_5"].iloc[-1])[cite: 1]
+    e10 = float(df_1h_calc["ema_10"].iloc[-1])[cite: 1]
+    live_gap = abs(e5 - e10)[cite: 1]
 
-    print(f"[{current_time_str}] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA: {e10:.2f} | Gap: {live_gap:.2f} pts")
+    print(f"[{current_time_str}] Spot: {spot:.2f} | 5 EMA: {e5:.2f} | 10 EMA: {e10:.2f} | Live Gap: {live_gap:.2f} pts")
 
-    if len(df_1h_calc) < 2:
+    if len(df_1h_calc) < 2:[cite: 1]
         return
 
-    prev_1h = df_1h_calc.iloc[-2]
-    prev_ema5 = float(prev_1h["ema_5"])
-    prev_ema10 = float(prev_1h["ema_10"])
-    closed_1h_time = str(df_1h_calc.index[-2])
+    prev_1h = df_1h_calc.iloc[-2][cite: 1]
+    prev_ema5 = float(prev_1h["ema_5"])[cite: 1]
+    prev_ema10 = float(prev_1h["ema_10"])[cite: 1]
+    closed_1h_time = str(df_1h_calc.index[-2])[cite: 1]
     forming_1h_time = str(df_1h_calc.index[-1])
 
-    prev2_ema5 = float(df_1h_calc.iloc[-3]["ema_5"]) if len(df_1h_calc) >= 3 else prev_ema5
-    prev2_ema10 = float(df_1h_calc.iloc[-3]["ema_10"]) if len(df_1h_calc) >= 3 else prev_ema10
+    prev2_ema5 = float(df_1h_calc.iloc[-3]["ema_5"]) if len(df_1h_calc) >= 3 else prev_ema5[cite: 1]
+    prev2_ema10 = float(df_1h_calc.iloc[-3]["ema_10"]) if len(df_1h_calc) >= 3 else prev_ema10[cite: 1]
 
-    closed_5m_time = str(df_5m.index[-2]) if len(df_5m) >= 2 else str(df_5m.index[-1])
-    latest_5m_close = float(df_5m.iloc[-2]["close"]) if len(df_5m) >= 2 else spot
+    closed_5m_time = str(df_5m.index[-2]) if len(df_5m) >= 2 else str(df_5m.index[-1])[cite: 1]
+    latest_5m_close = float(df_5m.iloc[-2]["close"]) if len(df_5m) >= 2 else spot[cite: 1]
 
     s_invalidation = (27.0 * prev_ema10 - 22.0 * prev_ema5) / 5.0
     safety_buffer = abs(spot - s_invalidation)
@@ -472,16 +463,16 @@ def evaluate_and_notify():
     # ==========================================================
     # 4. 1H CANDLE CLOSE AUDIT & CONFIRMATION / ROLLBACK
     # ==========================================================
-    if state.get("last_verified_1h_candle") != closed_1h_time:
-        is_1h_bull = prev_ema5 > prev_ema10
-        is_1h_bear = prev_ema5 < prev_ema10
+    if state.get("last_verified_1h_candle") != closed_1h_time:[cite: 1]
+        is_1h_bull = prev_ema5 > prev_ema10[cite: 1]
+        is_1h_bear = prev_ema5 < prev_ema10[cite: 1]
 
-        fresh_1h_bull_cross = is_1h_bull and (prev2_ema5 <= prev2_ema10)
-        fresh_1h_bear_cross = is_1h_bear and (prev2_ema5 >= prev2_ema10)
+        fresh_1h_bull_cross = is_1h_bull and (prev2_ema5 <= prev2_ema10)[cite: 1]
+        fresh_1h_bear_cross = is_1h_bear and (prev2_ema5 >= prev2_ema10)[cite: 1]
 
-        if state.get("pending_confirmation") is not None and state.get("active_position") is not None:
-            req_dir = state["pending_confirmation"]["expected_direction"]
-            confirmed = (req_dir == "BULLISH" and is_1h_bull) or (req_dir == "BEARISH" and is_1h_bear)
+        if state.get("pending_confirmation") is not None and state.get("active_position") is not None:[cite: 1]
+            req_dir = state["pending_confirmation"]["expected_direction"][cite: 1]
+            confirmed = (req_dir == "BULLISH" and is_1h_bull) or (req_dir == "BEARISH" and is_1h_bear)[cite: 1]
 
             if confirmed:
                 conf_msg = (
@@ -493,16 +484,16 @@ def evaluate_and_notify():
                     f"📦 *Position:* Active spread validated to hold trend."
                 )
                 send_telegram(conf_msg)
-                state["pending_confirmation"] = None
-                state["previous_position_backup"] = None
-                state["last_verified_1h_candle"] = closed_1h_time
+                state["pending_confirmation"] = None[cite: 1]
+                state["previous_position_backup"] = None[cite: 1]
+                state["last_verified_1h_candle"] = closed_1h_time[cite: 1]
                 save_state(state)
             else:
-                act_pos = state["active_position"]
-                pnl_loss = (spot - act_pos["entry_spot"]) if "BULL" in act_pos["type"] else (act_pos["entry_spot"] - spot)
-                rupee_loss = pnl_loss * 0.22 * POSITION_QTY
-                backup_pos = state.get("previous_position_backup")
-                reopened_type = backup_pos["type"] if backup_pos else ("BEAR_PUT_SPREAD" if req_dir == "BULLISH" else "BULL_CALL_SPREAD")
+                act_pos = state["active_position"][cite: 1]
+                pnl_loss = (spot - act_pos["entry_spot"]) if "BULL" in act_pos["type"] else (act_pos["entry_spot"] - spot)[cite: 1]
+                rupee_loss = pnl_loss * 0.22 * POSITION_QTY[cite: 1]
+                backup_pos = state.get("previous_position_backup")[cite: 1]
+                reopened_type = backup_pos["type"] if backup_pos else ("BEAR_PUT_SPREAD" if req_dir == "BULLISH" else "BULL_CALL_SPREAD")[cite: 1]
                 atm_strike = int(round(spot / 50.0) * 50)
                 b_strike = atm_strike
                 s_strike = atm_strike + SPREAD_WIDTH if "BULL" in reopened_type else atm_strike - SPREAD_WIDTH
@@ -510,14 +501,14 @@ def evaluate_and_notify():
 
                 log_paper_trade({
                     "timestamp": current_time_str,
-                    "action": "CLOSE_ROLLBACK_INVALIDATED_LEG2",
-                    "direction": act_pos["type"],
+                    "action": "CLOSE_ROLLBACK_INVALIDATED_LEG2",[cite: 1]
+                    "direction": act_pos["type"],[cite: 1]
                     "expiry": act_pos["expiry"],
-                    "spot": spot,
+                    "spot": spot,[cite: 1]
                     "buy_strike": act_pos["buy_strike"],
                     "sell_strike": act_pos["sell_strike"],
-                    "pnl_pts": round(pnl_loss, 2),
-                    "est_net_inr": round(rupee_loss, 2),
+                    "pnl_pts": round(pnl_loss, 2),[cite: 1]
+                    "est_net_inr": round(rupee_loss, 2),[cite: 1]
                 })
 
                 rollback_msg = (
@@ -531,32 +522,32 @@ def evaluate_and_notify():
                 )
                 send_telegram(rollback_msg)
 
-                state["active_position"] = {
+                state["active_position"] = {[cite: 1]
                     "type": reopened_type,
                     "expiry": target_expiry,
                     "buy_strike": b_strike,
                     "sell_strike": s_strike,
-                    "entry_spot": spot,
-                    "entry_time": current_time_str,
-                    "is_restored_leg3": True,
+                    "entry_spot": spot,[cite: 1]
+                    "entry_time": current_time_str,[cite: 1]
+                    "is_restored_leg3": True,[cite: 1]
                 }
-                state["pending_confirmation"] = None
-                state["previous_position_backup"] = None
-                state["armed_direction"] = None
-                state["swing_pivot"] = None
-                state["last_verified_1h_candle"] = closed_1h_time
+                state["pending_confirmation"] = None[cite: 1]
+                state["previous_position_backup"] = None[cite: 1]
+                state["armed_direction"] = None[cite: 1]
+                state["swing_pivot"] = None[cite: 1]
+                state["last_verified_1h_candle"] = closed_1h_time[cite: 1]
                 save_state(state)
                 return
         else:
-            if fresh_1h_bull_cross or fresh_1h_bear_cross:
-                t_type = "BULL_CALL_SPREAD" if fresh_1h_bull_cross else "BEAR_PUT_SPREAD"
-                if state.get("active_position") is None or state["active_position"]["type"] != t_type:
+            if fresh_1h_bull_cross or fresh_1h_bear_cross:[cite: 1]
+                t_type = "BULL_CALL_SPREAD" if fresh_1h_bull_cross else "BEAR_PUT_SPREAD"[cite: 1]
+                if state.get("active_position") is None or state["active_position"]["type"] != t_type:[cite: 1]
                     exit_block, spread_name, b_strike, s_strike = execute_spread(
-                        t_type, spot, target_expiry, current_time_str, state, reason="1H_CANDLE_CLOSE_CONFIRMED", prev_close=prev_close
+                        t_type, spot, target_expiry, current_time_str, state, reason="1H_CANDLE_CLOSE_CONFIRMED", prev_close=prev_close[cite: 1]
                     )
-                    state["last_cross_state"] = "BULL" if fresh_1h_bull_cross else "BEAR"
-                    state["last_verified_1h_candle"] = closed_1h_time
-                    state["last_traded_1h_candle"] = closed_1h_time
+                    state["last_cross_state"] = "BULL" if fresh_1h_bull_cross else "BEAR"[cite: 1]
+                    state["last_verified_1h_candle"] = closed_1h_time[cite: 1]
+                    state["last_traded_1h_candle"] = closed_1h_time[cite: 1]
                     save_state(state)
 
                     alert_msg = (
@@ -574,26 +565,26 @@ def evaluate_and_notify():
                     send_telegram(alert_msg)
                     return
 
-            state["last_verified_1h_candle"] = closed_1h_time
+            state["last_verified_1h_candle"] = closed_1h_time[cite: 1]
             save_state(state)
 
     # ==========================================================
     # 5. 09:15 AM OPENING GAP MOMENTUM ENTRY
     # ==========================================================
-    bull_cross = (e5 > e10) and (prev_ema5 <= prev_ema10)
-    bear_cross = (e5 < e10) and (prev_ema5 >= prev_ema10)
-    gap_size = abs(spot - prev_close) if prev_close else 0.0
+    bull_cross = (e5 > e10) and (prev_ema5 <= prev_ema10)[cite: 1]
+    bear_cross = (e5 < e10) and (prev_ema5 >= prev_ema10)[cite: 1]
+    gap_size = abs(spot - prev_close) if prev_close else 0.0[cite: 1]
 
-    if hour == 9 and minute == 15 and (bull_cross or bear_cross):
-        t_type = "BULL_CALL_SPREAD" if bull_cross else "BEAR_PUT_SPREAD"
+    if hour == 9 and minute == 15 and (bull_cross or bear_cross):[cite: 1]
+        t_type = "BULL_CALL_SPREAD" if bull_cross else "BEAR_PUT_SPREAD"[cite: 1]
         if 15.0 <= gap_size <= 350.0:
-            if state.get("active_position") is None or state["active_position"]["type"] != t_type:
+            if state.get("active_position") is None or state["active_position"]["type"] != t_type:[cite: 1]
                 exit_block, spread_name, b_strike, s_strike = execute_spread(
-                    t_type, spot, target_expiry, current_time_str, state, reason="OPEN_GAP_INSTANT", prev_close=prev_close
+                    t_type, spot, target_expiry, current_time_str, state, reason="OPEN_GAP_INSTANT", prev_close=prev_close[cite: 1]
                 )
-                state["pending_confirmation"] = {"expected_direction": "BULLISH" if bull_cross else "BEARISH"}
-                state["last_cross_state"] = "BULL" if bull_cross else "BEAR"
-                state["last_traded_1h_candle"] = closed_1h_time
+                state["pending_confirmation"] = {"expected_direction": "BULLISH" if bull_cross else "BEARISH"}[cite: 1]
+                state["last_cross_state"] = "BULL" if bull_cross else "BEAR"[cite: 1]
+                state["last_traded_1h_candle"] = closed_1h_time[cite: 1]
                 save_state(state)
 
                 gap_msg = (
@@ -645,13 +636,13 @@ def evaluate_and_notify():
     # ==========================================================
     # 7. INTRADAY 1H CROSSOVER & 5M CANDLE CLOSE BREAKOUT
     # ==========================================================
-    if (hour < 15 or (hour == 15 and minute < 15)) and (state.get("last_traded_1h_candle") != closed_1h_time):
-        if bull_cross and state.get("last_cross_state") != "BULL" and live_gap >= MIN_EMA_GAP:
-            pivot, p_time = find_first_swing_pivot(df_5m, direction="BULLISH")
-            state["armed_direction"] = "BULLISH"
-            state["swing_pivot"] = pivot
+    if (hour < 15 or (hour == 15 and minute < 15)) and (state.get("last_traded_1h_candle") != closed_1h_time):[cite: 1]
+        if bull_cross and state.get("last_cross_state") != "BULL" and live_gap >= MIN_EMA_GAP:[cite: 1]
+            pivot, p_time = find_first_swing_pivot(df_5m, direction="BULLISH")[cite: 1]
+            state["armed_direction"] = "BULLISH"[cite: 1]
+            state["swing_pivot"] = pivot[cite: 1]
             state["pivot_candle_time"] = p_time
-            state["last_cross_state"] = "BULL"
+            state["last_cross_state"] = "BULL"[cite: 1]
             save_state(state)
 
             arm_msg = (
@@ -667,12 +658,12 @@ def evaluate_and_notify():
             )
             send_telegram(arm_msg)
 
-        elif bear_cross and state.get("last_cross_state") != "BEAR" and live_gap >= MIN_EMA_GAP:
-            pivot, p_time = find_first_swing_pivot(df_5m, direction="BEARISH")
-            state["armed_direction"] = "BEARISH"
-            state["swing_pivot"] = pivot
+        elif bear_cross and state.get("last_cross_state") != "BEAR" and live_gap >= MIN_EMA_GAP:[cite: 1]
+            pivot, p_time = find_first_swing_pivot(df_5m, direction="BEARISH")[cite: 1]
+            state["armed_direction"] = "BEARISH"[cite: 1]
+            state["swing_pivot"] = pivot[cite: 1]
             state["pivot_candle_time"] = p_time
-            state["last_cross_state"] = "BEAR"
+            state["last_cross_state"] = "BEAR"[cite: 1]
             save_state(state)
 
             arm_msg = (
@@ -688,26 +679,26 @@ def evaluate_and_notify():
             )
             send_telegram(arm_msg)
 
-        if state.get("armed_direction") and state.get("swing_pivot") and (state.get("last_verified_5m_candle") != closed_5m_time):
-            direction = state["armed_direction"]
-            pivot = float(state["swing_pivot"])
+        if state.get("armed_direction") and state.get("swing_pivot") and (state.get("last_verified_5m_candle") != closed_5m_time):[cite: 1]
+            direction = state["armed_direction"][cite: 1]
+            pivot = float(state["swing_pivot"])[cite: 1]
 
             is_5m_breakout = (
                 (direction == "BULLISH" and latest_5m_close > pivot) or
                 (direction == "BEARISH" and latest_5m_close < pivot)
-            )
+            )[cite: 1]
 
-            if is_5m_breakout:
-                t_type = "BULL_CALL_SPREAD" if direction == "BULLISH" else "BEAR_PUT_SPREAD"
-                if state.get("active_position") is None or state["active_position"]["type"] != t_type:
+            if is_5m_breakout:[cite: 1]
+                t_type = "BULL_CALL_SPREAD" if direction == "BULLISH" else "BEAR_PUT_SPREAD"[cite: 1]
+                if state.get("active_position") is None or state["active_position"]["type"] != t_type:[cite: 1]
                     exit_block, spread_name, b_strike, s_strike = execute_spread(
-                        t_type, spot, target_expiry, current_time_str, state, reason="5M_CANDLE_CLOSE_BREAKOUT", prev_close=prev_close
+                        t_type, spot, target_expiry, current_time_str, state, reason="5M_CANDLE_CLOSE_BREAKOUT", prev_close=prev_close[cite: 1]
                     )
-                    state["pending_confirmation"] = {"expected_direction": direction}
-                    state["armed_direction"] = None
-                    state["swing_pivot"] = None
-                    state["last_traded_1h_candle"] = closed_1h_time
-                    state["last_verified_5m_candle"] = closed_5m_time
+                    state["pending_confirmation"] = {"expected_direction": direction}[cite: 1]
+                    state["armed_direction"] = None[cite: 1]
+                    state["swing_pivot"] = None[cite: 1]
+                    state["last_traded_1h_candle"] = closed_1h_time[cite: 1]
+                    state["last_verified_5m_candle"] = closed_5m_time[cite: 1]
                     save_state(state)
 
                     breakout_msg = (
@@ -725,7 +716,7 @@ def evaluate_and_notify():
                     send_telegram(breakout_msg)
                     return
 
-            state["last_verified_5m_candle"] = closed_5m_time
+            state["last_verified_5m_candle"] = closed_5m_time[cite: 1]
             save_state(state)
 
     # ==========================================================
@@ -760,86 +751,25 @@ def evaluate_and_notify():
                 send_telegram(status_card)
 
 
-def get_seconds_until_next_market_open(now_ist: datetime) -> int:
-    """Calculates seconds until next trading day 09:00 AM IST (skipping weekends)."""
-    target = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
-    if now_ist >= target:
-        target += timedelta(days=1)
-    while target.weekday() >= 5:  # 5=Sat, 6=Sun
-        target += timedelta(days=1)
-    return int((target - now_ist).total_seconds()), target
-
-
-def is_market_active_window(now_ist: datetime) -> bool:
-    """Active live scanning window: Mon-Fri between 09:00 AM and 03:40 PM IST."""
-    if now_ist.weekday() >= 5:  # Saturday or Sunday
-        return False
+def run_single_pass():
+    """Single execution cycle tailored for GitHub Actions runner."""
+    now_ist = datetime.now(IST)
     hour, minute = now_ist.hour, now_ist.minute
-    if hour < 9:
-        return False
-    if hour == 15 and minute > 40:
-        return False
-    if hour > 15:
-        return False
-    return True
 
+    # Check if outside trading hours (Mon-Fri 09:00 AM - 03:40 PM IST)
+    if now_ist.weekday() >= 5 or hour < 9 or (hour == 15 and minute > 40) or hour > 15:
+        print(f"[{now_ist.strftime('%I:%M:%S %p IST')}] ⏸️ Outside market hours. Single pass completed cleanly.")
+        return
 
-def run_live_loop():
-    """Continuous runner with auto-standby outside market hours and active 09:00 AM start."""
-    print("🚀 Nifty Live Scanner Initialized.")
-
-    while True:
-        now_ist = datetime.now(IST)
-
-        if is_market_active_window(now_ist):
-            # Send session start greeting only once when morning starts
-            today_str = now_ist.strftime("%Y-%m-%d")
-            start_slot = f"{today_str}_SESSION_ACTIVE_START"
-            state = load_state()
-            if start_slot not in state.get("dispatched_slots", []):
-                state["dispatched_slots"].append(start_slot)
-                save_state(state)
-                startup_msg = (
-                    f"🟢 *NIFTY BOT RUNNER ONLINE & ACTIVE*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"⏰ *Session Time:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
-                    f"⏱️ *Scan Frequency:* `Every 60 seconds (09:00 AM – 03:40 PM IST)`\n"
-                    f"⚙️ *Engine Mode:* `5M Close Breakout + 1H Close Confirmation`\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🤖 Bot is now actively scanning live market."
-                )
-                send_telegram(startup_msg)
-
-            try:
-                evaluate_and_notify()
-            except Exception as e:
-                err_trace = traceback.format_exc()
-                print(f"Loop runtime error: {e}")
-                send_telegram_error("Scanner Loop Exception", err_trace)
-
-            sleep_time.sleep(SCAN_INTERVAL_SECONDS)
-        else:
-            # Outside active market hours
-            sleep_secs, target_dt = get_seconds_until_next_market_open(now_ist)
-            hours_left = sleep_secs / 3600.0
-            wake_time_str = target_dt.strftime("%A, %d-%b %I:%M %p IST")
-
-            standby_msg = (
-                f"⏸️ *NIFTY BOT ON STANDBY (MARKET CLOSED)*\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⏰ *Time:* `{now_ist.strftime('%d-%b %I:%M:%S %p IST')}`\n"
-                f"💤 *Status:* Outside active hours (09:00 AM – 03:40 PM IST).\n"
-                f"⏳ *Sleeping for:* `{hours_left:.1f} hours`\n"
-                f"🌅 *Next Market Session:* `{wake_time_str}`\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🛡️ Scanner is pausing network requests until 09:00 AM."
-            )
-            send_telegram(standby_msg)
-
-            print(f"[{now_ist.strftime('%I:%M:%S %p IST')}] ⏸️ Market closed. Sleeping for {hours_left:.2f}h until {wake_time_str}...")
-            sleep_time.sleep(sleep_secs)
-            print(f"[{datetime.now(IST).strftime('%I:%M:%S %p IST')}] 🌅 Waking up for 09:00 AM market open!")
+    evaluate_and_notify()
 
 
 if __name__ == "__main__":
-    run_live_loop()
+    try:
+        run_single_pass()
+        sys.exit(0)
+    except Exception as e:
+        err_trace = traceback.format_exc()
+        print(f"Workflow Exception: {e}")
+        send_telegram_error("GitHub Action Runner Exception", err_trace)
+        sys.exit(0)
