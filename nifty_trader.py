@@ -13,6 +13,7 @@ CHAT_ID = str(os.getenv("CHAT_ID") or "").strip()
 
 SPREAD_WIDTH = 200          # 200-point ATM/OTM Debit Spread
 MIN_EMA_GAP = 2.5           # Minimum EMA separation to arm crossover
+GAP_THRESHOLD = 5.0         # EMA Gap compression alert threshold (5.0 pts)
 POSITION_QTY = 650          # Position quantity (10 lots @ 65 qty for ₹10L Capital)
 STATE_FILE = "strategy_state.json"
 TRADE_LOG_FILE = "paper_trades.csv"
@@ -46,6 +47,7 @@ def load_state():
         "last_verified_5m_candle": None,
         "last_verified_1h_candle": None,
         "last_traded_1h_candle": None,
+        "last_tight_gap_candle": None,
         "dispatched_slots": [],
     }
     if os.path.exists(STATE_FILE):
@@ -431,6 +433,7 @@ def run_single_pass():
     prev_ema5 = float(prev_1h["ema_5"])
     prev_ema10 = float(prev_1h["ema_10"])
     closed_1h_time = str(df_1h_calc.index[-2])
+    forming_1h_time = str(df_1h_calc.index[-1])
 
     prev2_ema5 = float(df_1h_calc.iloc[-3]["ema_5"]) if len(df_1h_calc) >= 3 else prev_ema5
     prev2_ema10 = float(df_1h_calc.iloc[-3]["ema_10"]) if len(df_1h_calc) >= 3 else prev_ema10
@@ -438,8 +441,30 @@ def run_single_pass():
     closed_5m_time = str(df_5m.index[-2]) if len(df_5m) >= 2 else str(df_5m.index[-1])
     latest_5m_close = float(df_5m.iloc[-2]["close"]) if len(df_5m) >= 2 else spot
 
+    s_invalidation = (27.0 * prev_ema10 - 22.0 * prev_ema5) / 5.0
+    safety_buffer = abs(spot - s_invalidation)
+
     # ==========================================================
-    # 3. 1H CANDLE CLOSE AUDIT & CONFIRMATION / ROLLBACK
+    # 3. EMA GAP COMPRESSION ALERT (< 5.0 PTS)
+    # ==========================================================
+    if live_gap <= GAP_THRESHOLD and state.get("last_tight_gap_candle") != forming_1h_time:
+        state["last_tight_gap_candle"] = forming_1h_time
+        save_state(state)
+        gap_alert = (
+            f"⚡ *EMA GAP COMPRESSION ALERT (< {GAP_THRESHOLD:.1f} PTS)*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏰ *Time:* `{current_time_str}`\n"
+            f"📍 *Nifty Spot:* `{spot:.2f}` {diff_str}\n"
+            f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
+            f"📏 *Current Gap:* `{live_gap:.2f} pts` (High Compression)\n"
+            f"🛡️ *Invalidation Floor:* `{s_invalidation:.2f}` (Buffer: `{safety_buffer:.2f} pts`)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👀 *Action:* Watch for imminent 1H crossover breakout."
+        )
+        send_telegram(gap_alert)
+
+    # ==========================================================
+    # 4. 1H CANDLE CLOSE AUDIT & CONFIRMATION / ROLLBACK
     # ==========================================================
     if state.get("last_verified_1h_candle") != closed_1h_time:
         is_1h_bull = prev_ema5 > prev_ema10
@@ -547,7 +572,7 @@ def run_single_pass():
             save_state(state)
 
     # ==========================================================
-    # 4. 09:15 AM OPENING GAP MOMENTUM ENTRY
+    # 5. 09:15 AM OPENING GAP MOMENTUM ENTRY
     # ==========================================================
     bull_cross = (e5 > e10) and (prev_ema5 <= prev_ema10)
     bear_cross = (e5 < e10) and (prev_ema5 >= prev_ema10)
@@ -581,7 +606,7 @@ def run_single_pass():
                 return
 
     # ==========================================================
-    # 5. 03:25 PM EOD CROSSOVER HOLD (BTST / STBT)
+    # 6. 03:25 PM EOD CROSSOVER HOLD (BTST / STBT)
     # ==========================================================
     if hour == 15 and minute == 25:
         is_live_bull = e5 > e10
@@ -612,7 +637,7 @@ def run_single_pass():
                 return
 
     # ==========================================================
-    # 6. INTRADAY 1H CROSSOVER & 5M CANDLE CLOSE BREAKOUT
+    # 7. INTRADAY 1H CROSSOVER & 5M CANDLE CLOSE BREAKOUT
     # ==========================================================
     if (hour < 15 or (hour == 15 and minute < 15)) and (state.get("last_traded_1h_candle") != closed_1h_time):
         if bull_cross and state.get("last_cross_state") != "BULL" and live_gap >= MIN_EMA_GAP:
@@ -697,7 +722,30 @@ def run_single_pass():
             state["last_verified_5m_candle"] = closed_5m_time
             save_state(state)
 
-    print(f"[{current_time_str}] Evaluation complete. State saved.")
+    # ==========================================================
+    # 8. ROUTINE 30-MINUTE STATUS UPDATE CARD
+    # ==========================================================
+    pos_summary = (
+        f"`{state['active_position']['type']}` ({state['active_position']['buy_strike']}/{state['active_position']['sell_strike']})"
+        if state.get("active_position")
+        else "`No Active Position (Cash)`"
+    )
+    trend_state = "Bullish (5 EMA > 10 EMA)" if e5 > e10 else "Bearish (5 EMA < 10 EMA)"
+
+    status_card = (
+        f"📊 *NIFTY STRATEGY 30-MIN SCANNER UPDATE*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏰ *Time:* `{current_time_str}`\n"
+        f"📍 *Spot:* `{spot:.2f}` {diff_str}\n"
+        f"📈 *Live 5 EMA:* `{e5:.2f}` | *10 EMA:* `{e10:.2f}`\n"
+        f"📏 *EMA Gap:* `{live_gap:.2f} pts` | 🧭 *Trend:* `{trend_state}`\n"
+        f"🛡️ *Invalidation Floor:* `{s_invalidation:.2f}` (Buffer: `{safety_buffer:.2f} pts`)\n"
+        f"📦 *Active Position:* {pos_summary}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ *Engine Status:* Operational & Monitoring."
+    )
+    send_telegram(status_card)
+    print(f"[{current_time_str}] Dispatched 30-Min Status Card to Telegram.")
 
 
 if __name__ == "__main__":
