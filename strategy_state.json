@@ -16,14 +16,16 @@
   "previous_position_backup": null,
   "last_cross_state": "BEAR",
   "last_verified_5m_candle": null,
-  "last_verified_1h_candle": "2026-08-31 13:15:00+05:30",
+  "last_verified_1h_candle": "2026-08-31 14:15:00+05:30",
   "last_traded_1h_candle": null,
+  "last_tight_gap_candle": null,
   "dispatched_slots": [
     "2026-08-27_13_45",
     "2026-08-27_14_45",
     "2026-08-27_15_30_EOD_CROSS_EXEC",
     "2026-08-27_15_15",
-    "2026-08-27_EOD_CAS"
+    "2026-08-27_EOD_CAS",
+    "2026-08-31_1530_POST_CAS"
   ],
   "last_processed_5m_candle": null,
   "last_tight_gap_ts": 0
