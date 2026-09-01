@@ -25,7 +25,8 @@
     "2026-08-27_15_30_EOD_CROSS_EXEC",
     "2026-08-27_15_15",
     "2026-08-27_EOD_CAS",
-    "2026-08-31_1530_POST_CAS"
+    "2026-08-31_1530_POST_CAS",
+    "2026-09-01_0910_PRE_MARKET"
   ],
   "last_processed_5m_candle": null,
   "last_tight_gap_ts": 0
