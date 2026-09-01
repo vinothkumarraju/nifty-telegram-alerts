@@ -12,25 +12,11 @@
     "entry_time": "11:59:03 AM IST",
     "is_restored_leg3": false
   },
-  "pending_confirmation": {
-    "expected_direction": "BULLISH"
-  },
-  "previous_position_backup": {
-    "type": "BEAR_PUT_SPREAD",
-    "expiry": "01-Sep-2026",
-    "buy_strike": 24150,
-    "sell_strike": 23950,
-    "entry_spot": 24133.05078125,
-    "entry_time": "03:15:05 PM IST",
-    "is_restored_leg3": false,
-    "exit_spot": 24120.349609375,
-    "exit_time": "11:59:03 AM IST",
-    "captured_pnl_pts": 12.7,
-    "captured_inr": 1816.27
-  },
+  "pending_confirmation": null,
+  "previous_position_backup": null,
   "last_cross_state": "BULL",
   "last_verified_5m_candle": "2026-09-01 11:55:00+05:30",
-  "last_verified_1h_candle": "2026-09-01 10:15:00+05:30",
+  "last_verified_1h_candle": "2026-09-01 11:15:00+05:30",
   "last_traded_1h_candle": "2026-09-01 10:15:00+05:30",
   "last_tight_gap_candle": "2026-09-01 11:15:00+05:30",
   "dispatched_slots": [
