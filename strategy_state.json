@@ -1,7 +1,7 @@
 {
-  "armed_direction": null,
-  "swing_pivot": null,
-  "pivot_candle_time": null,
+  "armed_direction": "BULLISH",
+  "swing_pivot": 24118.849609375,
+  "pivot_candle_time": "11:15 AM",
   "armed_candle_time": null,
   "active_position": {
     "type": "BEAR_PUT_SPREAD",
@@ -14,11 +14,11 @@
   },
   "pending_confirmation": null,
   "previous_position_backup": null,
-  "last_cross_state": "BEAR",
-  "last_verified_5m_candle": null,
-  "last_verified_1h_candle": "2026-09-01 09:15:00+05:30",
+  "last_cross_state": "BULL",
+  "last_verified_5m_candle": "2026-09-01 11:15:00+05:30",
+  "last_verified_1h_candle": "2026-09-01 10:15:00+05:30",
   "last_traded_1h_candle": null,
-  "last_tight_gap_candle": "2026-09-01 10:15:00+05:30",
+  "last_tight_gap_candle": "2026-09-01 11:15:00+05:30",
   "dispatched_slots": [
     "2026-08-27_13_45",
     "2026-08-27_14_45",
