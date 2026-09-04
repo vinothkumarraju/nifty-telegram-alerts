@@ -4,32 +4,32 @@
   "pivot_candle_time": "10:50 AM",
   "armed_candle_time": null,
   "active_position": {
+    "type": "BULL_CALL_SPREAD",
+    "expiry": "08-Sep-2026",
+    "buy_strike": 23950,
+    "sell_strike": 24150,
+    "entry_spot": 23966.5,
+    "entry_time": "11:18:05 AM IST",
+    "is_restored_leg3": false
+  },
+  "pending_confirmation": null,
+  "previous_position_backup": {
     "type": "BEAR_PUT_SPREAD",
     "expiry": "08-Sep-2026",
     "buy_strike": 24050,
     "sell_strike": 23850,
     "entry_spot": 24047.05078125,
     "entry_time": "01:19:01 PM IST",
-    "is_restored_leg3": false
-  },
-  "pending_confirmation": null,
-  "previous_position_backup": {
-    "type": "BULL_CALL_SPREAD",
-    "expiry": "08-Sep-2026",
-    "buy_strike": 24100,
-    "sell_strike": 24300,
-    "entry_spot": 24120.349609375,
-    "entry_time": "11:59:03 AM IST",
     "is_restored_leg3": false,
-    "exit_spot": 24047.05078125,
-    "exit_time": "01:19:01 PM IST",
-    "captured_pnl_pts": -73.3,
-    "captured_inr": -10481.73
+    "exit_spot": 23966.5,
+    "exit_time": "11:18:05 AM IST",
+    "captured_pnl_pts": 80.55,
+    "captured_inr": 11518.76
   },
   "last_cross_state": "BULL",
   "last_verified_5m_candle": "2026-09-04 10:50:00+05:30",
-  "last_verified_1h_candle": "2026-09-04 09:15:00+05:30",
-  "last_traded_1h_candle": "2026-09-01 12:15:00+05:30",
+  "last_verified_1h_candle": "2026-09-04 10:15:00+05:30",
+  "last_traded_1h_candle": "2026-09-04 10:15:00+05:30",
   "last_tight_gap_candle": "2026-09-04 10:15:00+05:30",
   "dispatched_slots": [
     "2026-08-27_13_45",
