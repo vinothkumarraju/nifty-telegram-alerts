@@ -1,7 +1,7 @@
 {
-  "armed_direction": "BULLISH",
-  "swing_pivot": 23961.25,
-  "pivot_candle_time": "10:50 AM",
+  "armed_direction": "BEARISH",
+  "swing_pivot": 23897.69921875,
+  "pivot_candle_time": "03:25 PM",
   "armed_candle_time": null,
   "active_position": {
     "type": "BULL_CALL_SPREAD",
@@ -26,8 +26,8 @@
     "captured_pnl_pts": 80.55,
     "captured_inr": 11518.76
   },
-  "last_cross_state": "BULL",
-  "last_verified_5m_candle": "2026-09-04 14:50:00+05:30",
+  "last_cross_state": "BEAR",
+  "last_verified_5m_candle": "2026-09-04 15:25:00+05:30",
   "last_verified_1h_candle": "2026-09-04 14:15:00+05:30",
   "last_traded_1h_candle": "2026-09-04 10:15:00+05:30",
   "last_tight_gap_candle": "2026-09-04 15:15:00+05:30",
@@ -43,7 +43,8 @@
     "2026-09-02_1530_POST_CAS",
     "2026-09-03_0910_PRE_MARKET",
     "2026-09-03_1530_POST_CAS",
-    "2026-09-04_1530_POST_CAS"
+    "2026-09-04_1530_POST_CAS",
+    "2026-09-07_0910_PRE_MARKET"
   ],
   "last_processed_5m_candle": null,
   "last_tight_gap_ts": 0
