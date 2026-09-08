@@ -2,9 +2,9 @@ name: NIFTY Telegram Bot & Scanner
 
 on:
   schedule:
-    # Run every 5 minutes to catch scheduled alerts and candle updates
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
+    # Runs every 5 minutes, Monday through Friday, from 3:30 AM to 10:30 AM UTC (9:00 AM to 4:00 PM IST)
+    - cron: '*/5 3-10 * * 1-5'
+  workflow_dispatch: # Allows you to run it manually anytime from the GitHub website
 
 jobs:
   run-bot:
