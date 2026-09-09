@@ -1,0 +1,21 @@
+{
+  "date": "2026-09-09",
+  "bot_started_sent": true,
+  "premarket_sent": true,
+  "market_open_sent": false,
+  "candle_alerts_sent": [],
+  "market_close_sent": false,
+  "day_open": null,
+  "last_move_alert_up": 0,
+  "last_move_alert_down": 0,
+  "ema5": null,
+  "ema10": null,
+  "prev_gap_sign": null,
+  "engine_state": "WATCHING",
+  "track_dir": null,
+  "track_entry_price": null,
+  "track_start_time": null,
+  "running_fav": 0.0,
+  "running_abs_gap": 0.0,
+  "in_trade_dir": null
+}
