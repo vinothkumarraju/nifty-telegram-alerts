@@ -38,8 +38,8 @@ jobs:
 
       - name: Run the alert bot
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
           PTS_THRESHOLD: '100'
         run: python nifty_telegram_bot.py
 
