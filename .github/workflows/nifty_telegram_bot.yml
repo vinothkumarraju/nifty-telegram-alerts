@@ -1,30 +1,52 @@
-name: NIFTY Telegram Bot & Scanner
+name: NIFTY Telegram Alert Bot
 
+# GitHub's scheduler is best-effort and won't go faster than 5-minute steps,
+# and can be delayed under load -- see the caveats at the top of
+# nifty_telegram_bot.py. This covers 08:55 IST through 15:35 IST on weekdays,
+# expressed in UTC (IST = UTC+5:30) across three cron lines because the
+# window crosses an hour boundary partway through each end:
+#   08:55-08:55 -> 03:25 UTC            (one-off, hour 3)
+#   09:00-14:55 IST -> 03:30-09:25 UTC  (every 5 min, hours 3-9)
+#   15:00-15:35 IST -> 09:30-10:05 UTC  (every 5 min, hours 9-10)
 on:
   schedule:
-    # Runs every 5 minutes, Monday through Friday, from 3:30 AM to 10:30 AM UTC (9:00 AM to 4:00 PM IST)
-    - cron: '*/5 3-10 * * 1-5'
-  workflow_dispatch: # Allows you to run it manually anytime from the GitHub website
+    - cron: '25 3 * * 1-5'
+    - cron: '30-59/5 3 * * 1-5'
+    - cron: '*/5 4-8 * * 1-5'
+    - cron: '0-25/5 9 * * 1-5'
+    - cron: '30-59/5 9 * * 1-5'
+    - cron: '0-5/5 10 * * 1-5'
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab to test
+
+permissions:
+  contents: write   # needed to commit state.json back to the repo
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas numpy yfinance requests
+        run: pip install requests
 
-      - name: Run Telegram Bot Script
+      - name: Run the alert bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PTS_THRESHOLD: '100'
         run: python nifty_telegram_bot.py
+
+      - name: Commit updated state.json
+        run: |
+          git config user.name "nifty-alert-bot"
+          git config user.email "actions@github.com"
+          git add state.json
+          git diff --staged --quiet || git commit -m "state update $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          git push
