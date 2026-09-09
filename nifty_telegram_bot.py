@@ -35,8 +35,8 @@ DAILY-RESET SCHEDULE (all times IST, best-effort -- see the caveats above)
                    "at the next run at or after it happens")
 
 ENVIRONMENT VARIABLES (set as GitHub Actions secrets)
-  TELEGRAM_BOT_TOKEN   your bot's token from BotFather
-  TELEGRAM_CHAT_ID     the chat/channel id to post into
+  BOT_TOKEN   your bot's token from BotFather
+  CHAT_ID     the chat/channel id to post into
   PTS_THRESHOLD        optional, default 100 (matches your pts_val)
 """
 import json
@@ -70,7 +70,7 @@ def send_telegram(text):
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
+        r = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
         r.raise_for_status()
     except Exception as e:
         print(f"Telegram send failed: {e}", file=sys.stderr)
