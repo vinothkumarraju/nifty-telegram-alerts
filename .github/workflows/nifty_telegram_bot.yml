@@ -1,13 +1,8 @@
 name: NIFTY Telegram Alert Bot
 
 # GitHub's scheduler is best-effort and won't go faster than 5-minute steps,
-# and can be delayed under load -- see the caveats at the top of
-# nifty_telegram_bot.py. This covers 08:55 IST through 15:35 IST on weekdays,
-# expressed in UTC (IST = UTC+5:30) across three cron lines because the
-# window crosses an hour boundary partway through each end:
-#   08:55-08:55 -> 03:25 UTC            (one-off, hour 3)
-#   09:00-14:55 IST -> 03:30-09:25 UTC  (every 5 min, hours 3-9)
-#   15:00-15:35 IST -> 09:30-10:05 UTC  (every 5 min, hours 9-10)
+# and can be delayed under load. This covers 08:55 IST through 15:35 IST on weekdays,
+# expressed in UTC (IST = UTC+5:30) across multiple cron lines:
 on:
   schedule:
     - cron: '25 3 * * 1-5'
