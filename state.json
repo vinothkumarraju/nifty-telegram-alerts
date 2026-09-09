@@ -11,7 +11,8 @@
     "11:45",
     "12:15",
     "12:45",
-    "13:15"
+    "13:15",
+    "13:45"
   ],
   "market_close_sent": false,
   "day_open": 23522.05,
@@ -19,8 +20,8 @@
   "last_move_alert_down": 0,
   "last_flip_move_alert_up": 0,
   "last_flip_move_alert_down": 0,
-  "ema5": 23546.99541053753,
-  "ema10": 23533.7929896999,
+  "ema5": 23546.696940358353,
+  "ema10": 23536.030627936285,
   "prev_gap_sign": 1,
   "engine_state": "TRACKING",
   "track_dir": "Bullish",
