@@ -3,16 +3,21 @@
   "bot_started_sent": true,
   "premarket_sent": true,
   "market_open_sent": true,
-  "candle_alerts_sent": [
+  "interval_alerts_sent": [
+    "09:45",
     "10:15",
-    "11:15"
+    "10:45",
+    "11:15",
+    "11:45"
   ],
   "market_close_sent": false,
   "day_open": 23522.05,
   "last_move_alert_up": 0,
   "last_move_alert_down": 0,
-  "ema5": 23519.41736015852,
-  "ema10": 23517.25431033493,
+  "last_flip_move_alert_up": 0,
+  "last_flip_move_alert_down": 0,
+  "ema5": 23517.92824010568,
+  "ema10": 23516.835344819487,
   "prev_gap_sign": 1,
   "engine_state": "TRACKING",
   "track_dir": "Bullish",
@@ -20,5 +25,9 @@
   "track_start_time": "2026-09-09T10:38:25.564884+05:30",
   "running_fav": 7.399999999997817,
   "running_abs_gap": 4.835399239047547,
-  "in_trade_dir": null
+  "in_trade_dir": null,
+  "candle_alerts_sent": [
+    "10:15",
+    "11:15"
+  ]
 }
