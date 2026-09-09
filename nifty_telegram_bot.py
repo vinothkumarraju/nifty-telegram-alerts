@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-NIFTY EMA5/10 Flip -- Telegram Alert Bot (30-Min Status Updates & Full Status on All Alerts)
-===========================================================================================
+NIFTY EMA5/10 Flip -- Telegram Alert Bot (Robust State Loading & 30-Min Updates)
+================================================================================
 """
 import json
 import os
@@ -115,17 +115,21 @@ PERSISTENT_KEYS = ["ema5", "ema10", "prev_gap_sign", "engine_state", "track_dir"
 
 
 def load_state(today_str):
+    fresh = default_state(today_str)
     if os.path.exists(STATE_PATH):
-        with open(STATE_PATH) as f:
-            saved = json.load(f)
-        if saved.get("date") == today_str:
-            return saved
-        fresh = default_state(today_str)
-        for k in PERSISTENT_KEYS:
-            if k in saved:
-                fresh[k] = saved[k]
-        return fresh
-    return default_state(today_str)
+        try:
+            with open(STATE_PATH) as f:
+                saved = json.load(f)
+            if saved.get("date") == today_str:
+                for k, v in saved.items():
+                    fresh[k] = v
+            else:
+                for k in PERSISTENT_KEYS:
+                    if k in saved:
+                        fresh[k] = saved[k]
+        except Exception:
+            pass
+    return fresh
 
 
 def save_state(state):
