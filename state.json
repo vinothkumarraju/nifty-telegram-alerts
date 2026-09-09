@@ -3,13 +3,15 @@
   "bot_started_sent": true,
   "premarket_sent": true,
   "market_open_sent": true,
-  "candle_alerts_sent": [],
+  "candle_alerts_sent": [
+    "10:15"
+  ],
   "market_close_sent": false,
   "day_open": 23522.05,
   "last_move_alert_up": 0,
   "last_move_alert_down": 0,
-  "ema5": 23500.45555555556,
-  "ema10": 23505.44226145755,
+  "ema5": 23508.453703703708,
+  "ema10": 23508.898213919812,
   "prev_gap_sign": -1,
   "engine_state": "TRACKING",
   "track_dir": "Bearish",
