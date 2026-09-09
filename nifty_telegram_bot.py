@@ -14,8 +14,8 @@ import requests
 IST = timezone(timedelta(hours=5, minutes=30))
 STATE_PATH = os.environ.get("STATE_PATH", "state.json")
 
-TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 PTS_THRESHOLD = float(os.environ.get("PTS_THRESHOLD", "100"))
 MOVE_STEP = 50.0   # every additional 50pt milestone from flip/open gets an alert
 
@@ -33,12 +33,12 @@ K10 = 2 / 11   # 10-period EMA smoothing constant
 # Telegram
 # =====================================================================
 def send_telegram(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    if not BOT_TOKEN or not CHAT_ID:
         print("BOT_TOKEN / CHAT_ID not set -- skipping send:", text, file=sys.stderr)
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
+        r = requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
         r.raise_for_status()
     except Exception as e:
         print(f"Telegram send failed: {e}", file=sys.stderr)
