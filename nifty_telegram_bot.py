@@ -1,223 +1,291 @@
 #!/usr/bin/env python3
 """
-NIFTY EMA(5/10) Live Telegram Bot & Scanner
-==========================================
-Fetches 1-minute NIFTY data (^NSEI) from Yahoo Finance, evaluates day-anchored 
-hourly candles, runs confirmation filters, tracks price movements, and sends 
-scheduled/event-driven Telegram alerts for GitHub Actions or local execution.
-"""
+NIFTY EMA5/10 Flip -- Telegram Alert Bot (designed to run on GitHub Actions)
+==============================================================================
 
+WHAT THIS IS
+------------
+A 5-minute-resolution sibling of live_replay_engine.py: same causal state
+machine (WATCHING -> TRACKING -> IN_TRADE), same idea (never look ahead,
+grade each flip only on what's happened so far) -- but running on GitHub
+Actions' cron, which can't go faster than ~5 minutes, checking a free/
+unofficial NSE endpoint instead of your 1-min historical files. Treat this
+as a headline alert stream, not the precise signal engine you'd trade off --
+that's still live_replay_engine.py against your real 1-min + options data.
+
+STATE PERSISTENCE
+------------------
+GitHub Actions runs are stateless -- nothing survives between runs unless
+you save it somewhere. This script reads/writes state.json in the repo
+working directory; the workflow (nifty_alerts.yml) commits that file back
+to the repo after every run. That means your repo will accumulate a commit
+roughly every 5 minutes during market hours (~78/day) -- that's normal and
+expected for this design. If that commit noise bothers you later, swap to
+actions/cache (restore-keys prefix trick) instead -- ask and I'll rewrite it.
+
+DAILY-RESET SCHEDULE (all times IST, best-effort -- see the caveats above)
+  09:00            "bot started"
+  09:11            pre-market info (previous close, gap)
+  09:15            market open marker
+  10:15,...,15:15  hourly candle-close snapshot (price + EMA5/EMA10)
+  15:30            market-close / day summary
+  anytime          FLIP, NOISE, TRADE CONFIRMED, TREND REVERSAL,
+                   NIFTY +/-50, NIFTY +/-100 -- fired the moment this
+                   run's fetch detects them (so "anytime" really means
+                   "at the next run at or after it happens")
+
+ENVIRONMENT VARIABLES (set as GitHub Actions secrets)
+  TELEGRAM_BOT_TOKEN   your bot's token from BotFather
+  TELEGRAM_CHAT_ID     the chat/channel id to post into
+  PTS_THRESHOLD        optional, default 100 (matches your pts_val)
+"""
+import json
 import os
 import sys
-import json
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-import numpy as np
-import pandas as pd
+import time
+from datetime import datetime, timedelta, timezone
+
 import requests
-import yfinance as yf
 
-# Configuration from Environment Variables or Defaults
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', 'YOUR_CHAT_ID')
+IST = timezone(timedelta(hours=5, minutes=30))
+STATE_PATH = os.environ.get("STATE_PATH", "state.json")
 
-CONFIG = {
-    'ticker': '^NSEI',
-    'gap_on': False,     'gap_val': 15.0,
-    'pts_on': True,      'pts_val': 100.0,
-    'close_on': False,   'close_val': 10.0,
-    'breakout_on': False, 'breakout_val': 0.0,
-    'swing_on': False,   'swing_val': 10.0,   'swing_lookback': 2,
-}
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+PTS_THRESHOLD = float(os.environ.get("PTS_THRESHOLD", "100"))
+MOVE_STEP = 50.0   # every additional 50pt milestone from the day's open gets an alert
 
-K5 = 2 / 6
-K10 = 2 / 11
-STATE_FILE = 'bot_state.json'
+CANDLE_TIMES = ["10:15", "11:15", "12:15", "13:15", "14:15", "15:15"]
 
+K5 = 2 / 6     # 5-period EMA smoothing constant
+K10 = 2 / 11   # 10-period EMA smoothing constant
+
+
+# =====================================================================
+# Telegram
+# =====================================================================
 def send_telegram(text):
-    if TELEGRAM_BOT_TOKEN == 'YOUR_BOT_TOKEN' or not TELEGRAM_BOT_TOKEN:
-        print(f"[Telegram Mock] {text}")
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set -- skipping send:", text, file=sys.stderr)
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text, 'parse_mode': 'Markdown'}
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if not response.ok:
-            print(f"Telegram Error: {response.text}")
+        r = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
+        r.raise_for_status()
     except Exception as e:
-        print(f"Telegram connection failed: {e}")
+        print(f"Telegram send failed: {e}", file=sys.stderr)
+    print("SENT:", text)
 
-def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, 'r') as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {'last_processed_timestamp': None, 'alerts_sent_today': []}
+
+# =====================================================================
+# Free/unofficial NSE quote fetch -- fragile by nature, always wrapped
+# =====================================================================
+def fetch_nifty_quote():
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"),
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/",
+    }
+    session = requests.Session()
+    session.headers.update(headers)
+    # NSE requires a warm-up hit to the homepage to receive cookies --
+    # calling the API cold almost always 401s.
+    session.get("https://www.nseindia.com", timeout=10)
+    time.sleep(1)
+    resp = session.get("https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050", timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    row = next(d for d in data["data"] if d["index"] == "NIFTY 50")
+    return dict(
+        last_price=float(row["lastPrice"]),
+        open=float(row["open"]),
+        day_high=float(row["dayHigh"]),
+        day_low=float(row["dayLow"]),
+        prev_close=float(row["previousClose"]),
+    )
+
+
+# =====================================================================
+# State
+# =====================================================================
+def default_state(date_str):
+    return dict(
+        date=date_str,
+        bot_started_sent=False, premarket_sent=False, market_open_sent=False,
+        candle_alerts_sent=[], market_close_sent=False,
+        day_open=None,
+        last_move_alert_up=0, last_move_alert_down=0,
+        # everything below persists ACROSS days (continuous causal EMA state,
+        # exactly like live_replay_engine.py never resets EMA at day boundaries)
+        ema5=None, ema10=None, prev_gap_sign=None,
+        engine_state="WATCHING",     # WATCHING / TRACKING / IN_TRADE
+        track_dir=None, track_entry_price=None, track_start_time=None,
+        running_fav=0.0, running_abs_gap=0.0,
+        in_trade_dir=None,
+    )
+
+
+PERSISTENT_KEYS = ["ema5", "ema10", "prev_gap_sign", "engine_state", "track_dir",
+                   "track_entry_price", "track_start_time", "running_fav",
+                   "running_abs_gap", "in_trade_dir"]
+
+
+def load_state(today_str):
+    if os.path.exists(STATE_PATH):
+        with open(STATE_PATH) as f:
+            saved = json.load(f)
+        if saved.get("date") == today_str:
+            return saved
+        # new day: reset the once-a-day alert flags, but CARRY FORWARD the
+        # EMA/flip-tracking state -- the original engine never resets EMA at
+        # day boundaries, and neither should this
+        fresh = default_state(today_str)
+        for k in PERSISTENT_KEYS:
+            if k in saved:
+                fresh[k] = saved[k]
+        return fresh
+    return default_state(today_str)   # first run ever
+
 
 def save_state(state):
-    try:
-        with open(STATE_FILE, 'w') as f:
-            json.dump(state, f)
-    except Exception as e:
-        print(f"Failed to save state: {e}")
+    with open(STATE_PATH, "w") as f:
+        json.dump(state, f, indent=2)
 
-def fetch_yahoo_data(ticker='^NSEI'):
-    df = yf.download(ticker, period='5d', interval='1m', progress=False)
-    if df.empty:
-        return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df = df.reset_index()
-    col_mapping = {c: c.lower() for c in df.columns}
-    df = df.rename(columns=col_mapping)
-    if 'datetime' in df.columns:
-        df = df.rename(columns={'datetime': 'timestamp'})
-    elif 'date' in df.columns:
-        df = df.rename(columns={'date': 'timestamp'})
-    df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
-    return df.dropna(subset=['timestamp', 'close']).sort_values('timestamp').reset_index(drop=True)
 
-def _compute_candle_structure(ts):
-    n = len(ts)
-    day = ts.dt.date.values
-    day_change = np.empty(n, dtype=bool)
-    day_change[0] = True
-    day_change[1:] = day[1:] != day[:-1]
-    day_start_idx = np.where(day_change)[0]
+def update_ema(state, price):
+    if state["ema5"] is None:
+        state["ema5"] = price
+        state["ema10"] = price
+    else:
+        state["ema5"] = price * K5 + state["ema5"] * (1 - K5)
+        state["ema10"] = price * K10 + state["ema10"] * (1 - K10)
+    return state["ema5"] - state["ema10"]
 
-    ts_ms = ts.values.astype('datetime64[ms]').astype(np.int64)
-    anchors_at_start = ts_ms[day_start_idx]
-    anchor_positions = np.searchsorted(day_start_idx, np.arange(n), side='right') - 1
-    anchor_for_tick = anchors_at_start[anchor_positions]
 
-    bucket = ((ts_ms - anchor_for_tick) // 3600000).astype(np.int64)
-    candle_change = np.empty(n, dtype=bool)
-    candle_change[0] = True
-    candle_change[1:] = day_change[1:] | (bucket[1:] != bucket[:-1])
-    candle_idx = np.cumsum(candle_change) - 1
+def fmt_ema(state):
+    if state["ema5"] is None:
+        return ""
+    return f" | EMA5 {state['ema5']:.2f} / EMA10 {state['ema10']:.2f}"
 
-    starts = np.where(candle_change)[0]
-    ends = np.append(starts[1:] - 1, n - 1)
-    return dict(ts_ms=ts_ms, candle_idx=candle_idx, ends=ends)
 
-def _ema_over_candles(committed_close):
-    n_candles = len(committed_close)
-    ema5_c = np.zeros(n_candles)
-    ema10_c = np.zeros(n_candles)
-    ema5_c[0] = committed_close[0]
-    ema10_c[0] = committed_close[0]
-    for i in range(1, n_candles):
-        ema5_c[i] = committed_close[i] * K5 + ema5_c[i - 1] * (1 - K5)
-        ema10_c[i] = committed_close[i] * K10 + ema10_c[i - 1] * (1 - K10)
-    return ema5_c, ema10_c
+# =====================================================================
+# One run
+# =====================================================================
+def run(now=None):
+    now = now or datetime.now(IST)
+    today_str = now.strftime("%Y-%m-%d")
+    hm = now.strftime("%H:%M")
+    state = load_state(today_str)
 
-def build_hourly_series(ts, close):
-    cs = _compute_candle_structure(ts)
-    ends = cs['ends']
-    candle_times = ts.values[ends]
-    candle_close = close[ends]
-    ema5, ema10 = _ema_over_candles(candle_close)
-    gap = ema5 - ema10
-    return pd.DataFrame({
-        'time': candle_times, 'close': candle_close, 'ema5': ema5, 'ema10': ema10, 'gap': gap,
-        'candle_idx': np.arange(len(candle_times))
-    })
-
-def main():
-    ist = ZoneInfo("Asia/Kolkata")
-    now_ist = datetime.now(ist)
-    current_time_str = now_ist.strftime("%H:%M")
-    current_date_str = now_ist.strftime("%Y-%m-%d")
-    
-    state = load_state()
-    # Reset alerts list if date changed
-    if state.get('date') != current_date_str:
-        state = {'date': current_date_str, 'last_processed_timestamp': None, 'alerts_sent_today': []}
-
-    # 1. Scheduled Time Alerts Check
-    alerts_schedule = {
-        "09:00": "🤖 *Bot Started*: NIFTY Strategy Bot is online and monitoring.",
-        "09:11": "📊 *Pre-Market Info*: Analyzing initial market breadth and setup levels.",
-        "09:15": "🔔 *Market Open (9:15)*: Trading session has commenced.",
-        "10:15": "⏰ *Hourly Update (10:15)*: First hourly candle completed.",
-        "11:15": "⏰ *Hourly Update (11:15)*: Mid-morning hourly candle completed.",
-        "12:15": "⏰ *Hourly Update (12:15)*: Midday hourly candle completed.",
-        "13:15": "⏰ *Hourly Update (13:15)*: Early afternoon hourly candle completed.",
-        "14:15": "⏰ *Hourly Update (14:15)*: Late afternoon hourly candle completed.",
-        "15:15": "⏰ *Hourly Update (15:15)*: Final hourly candle completed.",
-        "15:30": "🏁 *Post-Market Summary (15:30)*: Market closed for the day."
-    }
-
-    if current_time_str in alerts_schedule and current_time_str not in state['alerts_sent_today']:
-        send_telegram(alerts_schedule[current_time_str])
-        state['alerts_sent_today'].append(current_time_str)
+    if now.weekday() >= 5:   # Sat/Sun -- nothing to do
         save_state(state)
+        return state
 
-    # 2. Data Fetch & Event Checks (Flips, Moves, Confirmations, Noise)
-    raw = fetch_yahoo_data(CONFIG['ticker'])
-    if raw.empty:
-        return
+    # ---- once-daily scheduled alerts ----
+    if not state["bot_started_sent"] and hm >= "09:00":
+        send_telegram(f"\U0001F916 NIFTY alert bot started -- {today_str}")
+        state["bot_started_sent"] = True
 
-    series = build_hourly_series(raw['timestamp'], raw['close'].values.astype(float))
-    if len(series) < 2:
-        save_state(state)
-        return
+    if not state["premarket_sent"] and hm >= "09:11":
+        try:
+            q = fetch_nifty_quote()
+            chg = q["last_price"] - q["prev_close"]
+            send_telegram(f"\U0001F305 Pre-market: NIFTY {q['last_price']:.2f} "
+                          f"(prev close {q['prev_close']:.2f}, {chg:+.2f} pts)")
+        except Exception as e:
+            send_telegram(f"\u26A0\uFE0F Pre-market fetch failed: {e}")
+        state["premarket_sent"] = True
 
-    # Detect Flips
-    gap = series['gap'].values
-    prev = gap[:-1]
-    cur = gap[1:]
-    mask = ((prev < 0) & (cur > 0)) | ((prev > 0) & (cur < 0))
-    mask = mask & (prev != 0) & (cur != 0)
-    idxs = np.where(mask)[0] + 1
-
-    events = []
-    for i in idxs:
-        events.append({
-            'time': str(series['time'].values[i]),
-            'direction': 'Bullish' if gap[i] > 0 else 'Bearish',
-            'gap_at_cross': float(gap[i]),
-            'entry_price': float(series['close'].values[i])
-        })
-
-    if events:
-        latest_event = events[-1]
-        last_proc = state.get('last_processed_timestamp')
-        
-        if latest_event['time'] != last_proc:
-            # New event detected
-            direction = latest_event['direction']
-            price = latest_event['entry_price']
-            
-            # Send Flip Alert
-            send_telegram(f"⚡ *EMA Flip Detected*\n- Direction: {direction}\n- Price: {price:.2f}\n- Time: {latest_event['time']}")
-            
-            # Evaluate confirmation filters (e.g., Min Points Move)
-            pts_ok = abs(latest_event['gap_at_cross']) >= CONFIG['gap_val'] if CONFIG['gap_on'] else True
-            
-            if pts_ok:
-                send_telegram(f"✅ *Trade Confirmed*\n- Strategy accepted {direction} entry at {price:.2f}")
-            else:
-                send_telegram(f"🔇 *Noise Alert*\n- Flip rejected by confirmation filters (Classified as Noise).")
-                
-            state['last_processed_timestamp'] = latest_event['time']
+    # ---- market-hours engine ----
+    if "09:15" <= hm <= "15:30":
+        try:
+            q = fetch_nifty_quote()
+        except Exception as e:
+            send_telegram(f"\u26A0\uFE0F NIFTY fetch failed at {hm}: {e}")
             save_state(state)
+            return state
 
-    # Check NIFTY point movements from open or previous ticks
-    current_price = float(raw['close'].iloc[-1])
-    open_price = float(raw['open'].iloc[0])
-    price_diff = current_price - open_price
-    
-    if abs(price_diff) >= 100 and f"move_100_{current_date_str}" not in state['alerts_sent_today']:
-        send_telegram(f"🚨 *NIFTY Move 100+ Alert!*\n- Index has moved by {price_diff:+.2f} points today.\n- Current Price: {current_price:.2f}")
-        state['alerts_sent_today'].append(f"move_100_{current_date_str}")
-        save_state(state)
-    elif abs(price_diff) >= 50 and f"move_50_{current_date_str}" not in state['alerts_sent_today']:
-        send_telegram(f"⚠️ *NIFTY Move 50+ Alert*\n- Index has moved by {price_diff:+.2f} points today.\n- Current Price: {current_price:.2f}")
-        state['alerts_sent_today'].append(f"move_50_{current_date_str}")
-        save_state(state)
+        price = q["last_price"]
+        if state["day_open"] is None:
+            state["day_open"] = q["open"]
 
-if __name__ == '__main__':
-    main()
+        if not state["market_open_sent"] and hm >= "09:15":
+            send_telegram(f"\U0001F514 Market open. NIFTY {price:.2f} (open {q['open']:.2f})")
+            state["market_open_sent"] = True
+
+        for label in CANDLE_TIMES:
+            if hm >= label and label not in state["candle_alerts_sent"]:
+                send_telegram(f"\U0001F550 {label} candle: NIFTY {price:.2f}{fmt_ema(state)}")
+                state["candle_alerts_sent"].append(label)
+
+        # ---- point-move-from-open alerts ----
+        move = price - state["day_open"]
+        if move > 0:
+            up_level = int(move // MOVE_STEP) * int(MOVE_STEP)
+            if up_level > state["last_move_alert_up"]:
+                tag = "\U0001F4AF" if up_level % 100 == 0 else "\U0001F4C8"
+                send_telegram(f"{tag} NIFTY +{up_level} pts from open ({price:.2f})")
+                state["last_move_alert_up"] = up_level
+        elif move < 0:
+            down_level = int((-move) // MOVE_STEP) * int(MOVE_STEP)
+            if down_level > state["last_move_alert_down"]:
+                tag = "\U0001F4AF" if down_level % 100 == 0 else "\U0001F4C9"
+                send_telegram(f"{tag} NIFTY -{down_level} pts from open ({price:.2f})")
+                state["last_move_alert_down"] = down_level
+
+        # ---- causal EMA5/10 flip + confirmation state machine (5-min bars) ----
+        gap = update_ema(state, price)
+        gap_sign = 1 if gap > 0 else (-1 if gap < 0 else 0)
+        prev_sign = state["prev_gap_sign"]
+        is_flip = prev_sign not in (None, 0) and gap_sign != 0 and gap_sign != prev_sign
+
+        if is_flip:
+            direction = "Bullish" if gap_sign > 0 else "Bearish"
+
+            if state["engine_state"] == "IN_TRADE" and state["in_trade_dir"] != direction:
+                send_telegram(f"\U0001F501 TREND REVERSAL -- closing {state['in_trade_dir']} @ {price:.2f}")
+                state["engine_state"] = "WATCHING"
+                state["in_trade_dir"] = None
+
+            if state["engine_state"] == "TRACKING":
+                send_telegram(f"\u26AA NOISE -- {state['track_dir']} flip never confirmed "
+                              f"(only {state['running_fav']:.1f} pts reached)")
+
+            if state["engine_state"] in ("WATCHING", "TRACKING"):
+                send_telegram(f"\U0001F500 FLIP -- {direction} @ {price:.2f}{fmt_ema(state)}")
+                state["engine_state"] = "TRACKING"
+                state["track_dir"] = direction
+                state["track_entry_price"] = price
+                state["track_start_time"] = now.isoformat()
+                state["running_fav"] = 0.0
+                state["running_abs_gap"] = abs(gap)
+
+        if state["engine_state"] == "TRACKING":
+            fav = ((price - state["track_entry_price"]) if state["track_dir"] == "Bullish"
+                   else (state["track_entry_price"] - price))
+            state["running_fav"] = max(state["running_fav"], fav)
+            state["running_abs_gap"] = max(state["running_abs_gap"], abs(gap))
+
+            if state["running_fav"] >= PTS_THRESHOLD:
+                send_telegram(f"\u2705 TRADE CONFIRMED -- {state['track_dir']} @ {price:.2f} "
+                              f"(moved {state['running_fav']:.1f} pts)")
+                state["engine_state"] = "IN_TRADE"
+                state["in_trade_dir"] = state["track_dir"]
+
+        state["prev_gap_sign"] = gap_sign
+
+    if not state["market_close_sent"] and hm >= "15:30":
+        rng = ""
+        if state["day_open"] is not None:
+            rng = f" | open {state['day_open']:.2f}"
+        send_telegram(f"\U0001F319 Market closed -- {today_str}{rng}{fmt_ema(state)}")
+        state["market_close_sent"] = True
+
+    save_state(state)
+    return state
+
+
+if __name__ == "__main__":
+    run()
