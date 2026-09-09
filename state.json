@@ -4,14 +4,15 @@
   "premarket_sent": true,
   "market_open_sent": true,
   "candle_alerts_sent": [
-    "10:15"
+    "10:15",
+    "11:15"
   ],
   "market_close_sent": false,
   "day_open": 23522.05,
   "last_move_alert_up": 0,
   "last_move_alert_down": 0,
-  "ema5": 23522.11406035666,
-  "ema10": 23517.278661117613,
+  "ema5": 23520.276040237775,
+  "ema10": 23517.15526818714,
   "prev_gap_sign": 1,
   "engine_state": "TRACKING",
   "track_dir": "Bullish",
