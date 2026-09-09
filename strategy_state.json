@@ -27,7 +27,7 @@
     "captured_inr": -16473.49
   },
   "last_cross_state": "BEAR",
-  "last_verified_5m_candle": "2026-09-08 14:50:00+05:30",
+  "last_verified_5m_candle": "2026-09-08 15:25:00+05:30",
   "last_verified_1h_candle": "2026-09-08 14:15:00+05:30",
   "last_traded_1h_candle": "2026-09-04 15:15:00+05:30",
   "last_tight_gap_candle": "2026-09-04 15:15:00+05:30",
@@ -47,7 +47,8 @@
     "2026-09-07_0910_PRE_MARKET",
     "2026-09-07_1530_POST_CAS",
     "2026-09-08_0910_PRE_MARKET",
-    "2026-09-08_1530_POST_CAS"
+    "2026-09-08_1530_POST_CAS",
+    "2026-09-09_0910_PRE_MARKET"
   ],
   "last_processed_5m_candle": null,
   "last_tight_gap_ts": 0
