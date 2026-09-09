@@ -50,8 +50,8 @@ import requests
 IST = timezone(timedelta(hours=5, minutes=30))
 STATE_PATH = os.environ.get("STATE_PATH", "state.json")
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID")
 PTS_THRESHOLD = float(os.environ.get("PTS_THRESHOLD", "100"))
 MOVE_STEP = 50.0   # every additional 50pt milestone from the day's open gets an alert
 
@@ -66,11 +66,11 @@ K10 = 2 / 11   # 10-period EMA smoothing constant
 # =====================================================================
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set -- skipping send:", text, file=sys.stderr)
+        print("BOT_TOKEN / CHAT_ID not set -- skipping send:", text, file=sys.stderr)
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
+        r = requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
         r.raise_for_status()
     except Exception as e:
         print(f"Telegram send failed: {e}", file=sys.stderr)
@@ -91,19 +91,41 @@ def fetch_nifty_quote():
     session = requests.Session()
     session.headers.update(headers)
     # NSE requires a warm-up hit to the homepage to receive cookies --
-    # calling the API cold almost always 401s.
+    # calling the API cold almost always 401s/403s.
     session.get("https://www.nseindia.com", timeout=10)
     time.sleep(1)
-    resp = session.get("https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050", timeout=10)
+    # allIndices lists every index's own OHLC (NOT equity-stockIndices, which
+    # returns an index's *constituent stocks* -- that was the bug that
+    # produced the 404: right neighborhood, wrong endpoint).
+    resp = session.get("https://www.nseindia.com/api/allIndices", timeout=10)
     resp.raise_for_status()
     data = resp.json()
-    row = next(d for d in data["data"] if d["index"] == "NIFTY 50")
+
+    rows = data.get("data", data if isinstance(data, list) else [])
+    row = None
+    for d in rows:
+        label = str(d.get("index") or d.get("indexName") or d.get("index_name") or "").strip().upper()
+        if label == "NIFTY 50":
+            row = d
+            break
+    if row is None:
+        seen = [d.get("index") or d.get("indexName") for d in rows][:10]
+        raise RuntimeError(f"'NIFTY 50' not found in allIndices response. "
+                            f"First few index labels seen: {seen}. Raw keys of row 0: "
+                            f"{list(rows[0].keys()) if rows else 'NO ROWS'}")
+
+    def pick(*names):
+        for n in names:
+            if n in row and row[n] not in (None, ""):
+                return row[n]
+        raise KeyError(f"None of {names} present. Available keys: {list(row.keys())}")
+
     return dict(
-        last_price=float(row["lastPrice"]),
-        open=float(row["open"]),
-        day_high=float(row["dayHigh"]),
-        day_low=float(row["dayLow"]),
-        prev_close=float(row["previousClose"]),
+        last_price=float(pick("last", "lastPrice", "ltp")),
+        open=float(pick("open", "openPrice")),
+        day_high=float(pick("dayHigh", "high", "high52")) if any(k in row for k in ("dayHigh", "high")) else float(pick("last", "lastPrice")),
+        day_low=float(pick("dayLow", "low", "low52")) if any(k in row for k in ("dayLow", "low")) else float(pick("last", "lastPrice")),
+        prev_close=float(pick("previousClose", "prevClose", "previous_close")),
     )
 
 
