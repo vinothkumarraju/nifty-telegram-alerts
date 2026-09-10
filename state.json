@@ -1,24 +1,11 @@
 {
-  "date": "2026-09-09",
+  "date": "2026-09-10",
   "bot_started_sent": true,
-  "premarket_sent": true,
-  "market_open_sent": true,
-  "interval_alerts_sent": [
-    "09:45",
-    "10:15",
-    "10:45",
-    "11:15",
-    "11:45",
-    "12:15",
-    "12:45",
-    "13:15",
-    "13:45",
-    "14:15",
-    "14:45",
-    "15:15"
-  ],
+  "premarket_sent": false,
+  "market_open_sent": false,
+  "interval_alerts_sent": [],
   "market_close_sent": false,
-  "day_open": 23522.05,
+  "day_open": null,
   "last_move_alert_up": 0,
   "last_move_alert_down": 0,
   "last_flip_move_alert_up": 0,
@@ -32,9 +19,5 @@
   "track_start_time": "2026-09-09T14:50:25.753408+05:30",
   "running_fav": 21.200000000000728,
   "running_abs_gap": 17.38732288893516,
-  "in_trade_dir": null,
-  "candle_alerts_sent": [
-    "10:15",
-    "11:15"
-  ]
+  "in_trade_dir": null
 }
