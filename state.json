@@ -14,14 +14,14 @@
   "last_move_alert_down": 0,
   "last_flip_move_alert_up": 50,
   "last_flip_move_alert_down": 0,
-  "ema5": 23431.842268433324,
-  "ema10": 23448.832756448304,
+  "ema5": 23427.22817895555,
+  "ema10": 23443.22680073043,
   "prev_gap_sign": -1,
   "engine_state": "TRACKING",
   "track_dir": "Bearish",
   "track_entry_price": 23483.65,
   "track_start_time": "2026-09-09T14:50:25.753408+05:30",
-  "running_fav": 60.400000000001455,
+  "running_fav": 65.65000000000146,
   "running_abs_gap": 23.47981649218127,
   "in_trade_dir": null
 }
