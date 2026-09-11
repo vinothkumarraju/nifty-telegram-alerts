@@ -1,7 +1,7 @@
 {
   "date": "2026-09-11",
   "bot_started_sent": true,
-  "premarket_sent": false,
+  "premarket_sent": true,
   "market_open_sent": false,
   "interval_alerts_sent": [],
   "market_close_sent": false,
