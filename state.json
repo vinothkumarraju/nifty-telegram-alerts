@@ -5,22 +5,23 @@
   "market_open_sent": true,
   "interval_alerts_sent": [
     "09:45",
-    "10:15"
+    "10:15",
+    "10:45"
   ],
   "market_close_sent": false,
   "day_open": 23270.3,
   "last_move_alert_up": 0,
   "last_move_alert_down": 0,
-  "last_flip_move_alert_up": 50,
+  "last_flip_move_alert_up": 0,
   "last_flip_move_alert_down": 0,
-  "ema5": 23400.206425234832,
-  "ema10": 23400.024122901832,
-  "prev_gap_sign": 1,
+  "ema5": 23399.50428348989,
+  "ema10": 23399.674282374224,
+  "prev_gap_sign": -1,
   "engine_state": "TRACKING",
-  "track_dir": "Bullish",
-  "track_entry_price": 23342.35,
-  "track_start_time": "2026-09-11T11:55:51.537077+05:30",
-  "running_fav": 92.75,
-  "running_abs_gap": 23.382183921286924,
+  "track_dir": "Bearish",
+  "track_entry_price": 23398.1,
+  "track_start_time": "2026-09-14T10:52:38.761701+05:30",
+  "running_fav": 0.0,
+  "running_abs_gap": 0.16999888433565502,
   "in_trade_dir": null
 }
