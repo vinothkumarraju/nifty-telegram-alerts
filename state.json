@@ -9,7 +9,8 @@
     "10:45",
     "11:15",
     "11:45",
-    "12:15"
+    "12:15",
+    "12:45"
   ],
   "market_close_sent": false,
   "day_open": 23270.3,
@@ -17,8 +18,8 @@
   "last_move_alert_down": 0,
   "last_flip_move_alert_up": 0,
   "last_flip_move_alert_down": 0,
-  "ema5": 23398.28492622089,
-  "ema10": 23398.677207219545,
+  "ema5": 23398.22328414726,
+  "ema10": 23398.572260452354,
   "prev_gap_sign": -1,
   "engine_state": "TRACKING",
   "track_dir": "Bearish",
